@@ -1,0 +1,16 @@
+[package]
+name = "zellij-vertical-tabs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A two-line vertical tab sidebar for Zellij"
+
+[dependencies]
+unicode-width = "0.2"
+zellij-tile = "0.45.0"
+
+[profile.release]
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
