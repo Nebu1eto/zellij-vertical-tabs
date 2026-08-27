@@ -6,8 +6,18 @@ license = "MIT"
 description = "A two-line vertical tab sidebar for Zellij"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde_json = "1"
 unicode-width = "0.2"
 zellij-tile = "0.45.0"
+
+[[bin]]
+name = "zellij-vertical-tabs"
+path = "src/main.rs"
+
+[[bin]]
+name = "zellij-top-status"
+path = "src/top_status.rs"
 
 [profile.release]
 lto = true
