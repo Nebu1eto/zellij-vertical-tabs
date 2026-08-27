@@ -8,6 +8,7 @@ A compact Zellij sidebar that renders every visible tab as two rows:
 The active tab remains visible when the sidebar is too short to display every tab. Clicking either row switches to that tab.
 
 The repository also builds an adaptive top status plugin. Its center section prioritizes Claude permission/completion events and tab bells, then falls back to repository, branch, dirty-state, and active-command context.
+It accepts zellaude v0.5.1 timestamped hook events and notification focus callbacks.
 
 ## Build
 

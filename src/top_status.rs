@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -25,6 +25,7 @@ struct State {
     permissions_granted: bool,
     alert: Option<Alert>,
     timer_ticks: u8,
+    last_hook_timestamp_by_pane: HashMap<u32, u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +48,7 @@ impl ZellijPlugin for State {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
         request_permission(&[
             PermissionType::ReadApplicationState,
+            PermissionType::ChangeApplicationState,
             PermissionType::RunCommands,
             PermissionType::ReadCliPipes,
         ]);
@@ -126,6 +128,14 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if pipe_message.name == "zellaude:focus" {
+            if let Some(payload) = pipe_message.payload {
+                if let Ok(pane_id) = payload.trim().parse::<u32>() {
+                    focus_terminal_pane(pane_id, false, false);
+                }
+            }
+            return false;
+        }
         if pipe_message.name != "zellaude" {
             return false;
         }
@@ -139,6 +149,20 @@ impl ZellijPlugin for State {
             .get("hook_event")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        let pane_id = payload.get("pane_id").and_then(Value::as_u64).unwrap_or(0) as u32;
+        let timestamp = payload.get("ts_ms").and_then(Value::as_u64);
+        if event != "SessionEnd" {
+            if let Some(timestamp) = timestamp {
+                if self
+                    .last_hook_timestamp_by_pane
+                    .get(&pane_id)
+                    .is_some_and(|previous| timestamp < *previous)
+                {
+                    return false;
+                }
+                self.last_hook_timestamp_by_pane.insert(pane_id, timestamp);
+            }
+        }
         let tool = payload
             .get("tool_name")
             .and_then(Value::as_str)
@@ -151,7 +175,10 @@ impl ZellijPlugin for State {
             }
             "Stop" => self.set_alert("✓ Claude: response complete".to_string(), 8),
             "Notification" => self.set_alert("● Claude notification".to_string(), 12),
-            "SessionEnd" => self.alert = None,
+            "SessionEnd" => {
+                self.last_hook_timestamp_by_pane.remove(&pane_id);
+                self.alert = None;
+            }
             _ => return false,
         }
         true
