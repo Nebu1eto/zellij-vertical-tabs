@@ -3,7 +3,7 @@ name = "zellij-vertical-tabs"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "A two-line vertical tab sidebar for Zellij"
+description = "A unified status and horizontal/vertical tab plugin for Zellij"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
@@ -14,10 +14,6 @@ zellij-tile = "0.45.0"
 [[bin]]
 name = "zellij-vertical-tabs"
 path = "src/main.rs"
-
-[[bin]]
-name = "zellij-top-status"
-path = "src/top_status.rs"
 
 [profile.release]
 lto = true
