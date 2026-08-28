@@ -2555,6 +2555,16 @@ fn tab_totals_label(tabs: usize, panes: usize, room: usize) -> String {
             format!("{count} {noun}s")
         }
     };
+    // One pane per tab is the ordinary case, and repeating the same number
+    // twice says nothing, so the pane count only appears when it differs.
+    if tabs == panes {
+        let spelled = plural(tabs, "tab");
+        return if cell_width(&spelled) <= room {
+            spelled
+        } else {
+            tabs.to_string()
+        };
+    }
     let spelled = format!("{} · {}", plural(tabs, "tab"), plural(panes, "pane"));
     if cell_width(&spelled) <= room {
         return spelled;
@@ -3040,9 +3050,12 @@ mod tests {
     #[test]
     fn the_tab_header_spells_out_its_totals_when_they_fit() {
         assert_eq!(tab_totals_label(2, 3, 24), "2 tabs · 3 panes");
-        assert_eq!(tab_totals_label(1, 1, 24), "1 tab · 1 pane");
+        // One pane per tab: the second number would only repeat the first.
+        assert_eq!(tab_totals_label(3, 3, 24), "3 tabs");
+        assert_eq!(tab_totals_label(1, 1, 24), "1 tab");
         // A narrow sidebar keeps the counts rather than a truncated word.
         assert_eq!(tab_totals_label(2, 3, 8), "2 · 3");
+        assert_eq!(tab_totals_label(3, 3, 4), "3");
 
         assert_eq!(agent_totals_label(3, 20), "3 sessions");
         assert_eq!(agent_totals_label(1, 20), "1 session");
@@ -3123,7 +3136,7 @@ mod tests {
         assert!(weight_before(" Tabs").starts_with("\u{1b}[1;"));
         assert!(weight_before(" Agents").starts_with("\u{1b}[1;"));
         assert!(
-            weight_before("1 tab · 1 pane").starts_with("\u{1b}[22;"),
+            weight_before("1 tab").starts_with("\u{1b}[22;"),
             "the totals stay unbolded"
         );
     }
