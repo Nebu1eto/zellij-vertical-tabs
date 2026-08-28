@@ -1253,7 +1253,6 @@ impl State {
             if y + 2 > rows {
                 break;
             }
-            let accent = self.state_accent(entry.state);
             let focused = self.focused_terminal_pane == Some(entry.pane_id);
             let (name_style, detail_style) = vertical_styles(&self.colors, focused);
             // A focused card is highlighted across both of its rows, the way a
@@ -1263,6 +1262,7 @@ impl State {
             } else {
                 self.colors.background
             };
+            let accent = readable_on(self.state_accent(entry.state), row_bg, name_style.fg);
             let blank = fit_line("", content_cols);
             for row in [y, y + 1] {
                 frame.put(
@@ -2586,6 +2586,38 @@ fn agent_totals_label(sessions: usize, room: usize) -> String {
     sessions.to_string()
 }
 
+/// Perceived brightness, per the WCAG relative-luminance formula.
+fn relative_luminance(color: Rgb) -> f64 {
+    let channel = |value: u8| {
+        let value = f64::from(value) / 255.0;
+        if value <= 0.03928 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(color.0) + 0.7152 * channel(color.1) + 0.0722 * channel(color.2)
+}
+
+fn contrast_ratio(one: Rgb, other: Rgb) -> f64 {
+    let (a, b) = (relative_luminance(one), relative_luminance(other));
+    let (lighter, darker) = if a >= b { (a, b) } else { (b, a) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// A state accent is chosen against the panel background, so on a highlighted
+/// card it can land too close to that highlight to read - an idle agent is the
+/// usual victim, since its accent is the same muted tone. Fall back to the
+/// card's own foreground whenever the accent stops being legible.
+fn readable_on(accent: Rgb, background: Rgb, fallback: Rgb) -> Rgb {
+    const LEGIBLE_CONTRAST: f64 = 2.5;
+    if contrast_ratio(accent, background) >= LEGIBLE_CONTRAST {
+        accent
+    } else {
+        fallback
+    }
+}
+
 fn vertical_styles(colors: &Colors, active: bool) -> (Style, Style) {
     if active {
         (colors.tab_active, colors.cwd_active)
@@ -3138,6 +3170,75 @@ mod tests {
         assert!(
             weight_before("1 tab").starts_with("\u{1b}[22;"),
             "the totals stay unbolded"
+        );
+    }
+
+    #[test]
+    fn an_idle_state_stays_legible_on_a_focused_card() {
+        let colors = Colors::default();
+        // The idle accent is a muted tone, and so is the highlight behind it.
+        assert!(
+            contrast_ratio(colors.cwd_normal.fg, colors.tab_active.bg) < 2.5,
+            "the fixture needs an accent that collides with the highlight"
+        );
+        assert_eq!(
+            readable_on(
+                colors.cwd_normal.fg,
+                colors.tab_active.bg,
+                colors.tab_active.fg
+            ),
+            colors.tab_active.fg,
+            "an illegible accent gives way to the card's foreground"
+        );
+        assert_eq!(
+            readable_on(
+                colors.cwd_normal.fg,
+                colors.background,
+                colors.tab_active.fg
+            ),
+            colors.cwd_normal.fg,
+            "the same accent is kept on the flat background, where it does read"
+        );
+
+        let mut state = State::default();
+        state.view = View::Vertical;
+        state.tabs = vec![TabInfo {
+            position: 0,
+            active: true,
+            ..TabInfo::default()
+        }];
+        state.panes.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                is_focused: true,
+                ..PaneInfo::default()
+            }],
+        );
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "SessionStart".to_string(),
+            tool: None,
+            summary: None,
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+        state.track_focused_pane();
+
+        let mut frame = AnsiFrame::new(10, 30, &colors);
+        state.render_vertical(&mut frame, 10, 30);
+        let output = frame.finish();
+
+        let at = output.find("idle").expect("the idle agent is listed");
+        let style_at = output[..at].rfind("\u{1b}[").unwrap();
+        let style = &output[style_at..at];
+        let dim = format!(
+            "38;2;{};{};{};",
+            colors.cwd_normal.fg.0, colors.cwd_normal.fg.1, colors.cwd_normal.fg.2
+        );
+        assert!(
+            !style.contains(&dim),
+            "the state text drops the accent that vanishes on the highlight, got {style:?}"
         );
     }
 
