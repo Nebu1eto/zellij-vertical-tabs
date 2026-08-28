@@ -237,6 +237,7 @@ struct State {
     cwd_by_tab: HashMap<usize, PathBuf>,
     repo_by_tab: HashMap<usize, RepoInfo>,
     repo_cwd_by_tab: HashMap<usize, PathBuf>,
+    cwd_error: Option<String>,
     configured_home: Option<PathBuf>,
     git_context: Option<GitContext>,
     git_refresh_pending: bool,
@@ -451,6 +452,7 @@ impl ZellijPlugin for State {
                 self.session_name = mode_info.session_name.unwrap_or_default();
             }
             Event::TabUpdate(mut tabs) => {
+                self.note_permissions_granted();
                 tabs.sort_by_key(|tab| tab.position);
                 self.tabs = tabs;
                 self.close_empty_own_tab_if_needed();
@@ -458,6 +460,7 @@ impl ZellijPlugin for State {
                 self.refresh_cwds();
             }
             Event::PaneUpdate(panes) => {
+                self.note_permissions_granted();
                 self.panes = panes;
                 self.track_focused_pane();
                 self.detect_agents_from_manifest();
@@ -553,9 +556,11 @@ impl ZellijPlugin for State {
                 self.timer_ticks = self.timer_ticks.wrapping_add(1);
                 if self.timer_ticks >= self.git_refresh_interval {
                     self.timer_ticks = 0;
-                    // Branch changes are picked up on the same cadence as the bar's git state.
+                    // Branch changes are picked up on the same cadence as the bar's
+                    // git state; refreshing cwds first also recovers tabs whose
+                    // directory was unknown when an event arrived.
                     self.repo_cwd_by_tab.clear();
-                    self.refresh_repositories();
+                    self.refresh_cwds();
                     self.refresh_git();
                 }
             }
@@ -1208,6 +1213,15 @@ impl State {
                 serde_json::json!({
                     "position": tab.position,
                     "name": tab_name(tab),
+                    "cwd": self.cwd_by_tab.get(&tab.position).map(|cwd| cwd.display().to_string()),
+                    "selected_pane": self.selected_pane_for_tab(tab).map(|pane| format!("{pane:?}")),
+                    "repo": self.repo_by_tab.get(&tab.position).map(|repo| {
+                        serde_json::json!({
+                            "repository": repo.repository,
+                            "branch": repo.branch,
+                            "worktree": repo.worktree,
+                        })
+                    }),
                     "rows": self
                         .agent_rows_for_tab(tab.position)
                         .iter()
@@ -1243,6 +1257,7 @@ impl State {
             .collect::<Vec<_>>();
         serde_json::json!({
             "view": view,
+            "cwd_error": self.cwd_error,
             "plugin_id": self.plugin_id,
             "permissions_granted": self.permissions_granted,
             "agent_statuses": statuses,
@@ -1524,6 +1539,18 @@ impl State {
         }
     }
 
+    /// Zellij delivers application-state events only to a permitted plugin, and a
+    /// grant restored from its permission cache arrives without any
+    /// `PermissionRequestResult`. Receiving such an event is therefore the only
+    /// proof of that grant.
+    fn note_permissions_granted(&mut self) {
+        if self.permissions_granted {
+            return;
+        }
+        self.permissions_granted = true;
+        set_selectable(view_selectable(self.view));
+    }
+
     fn refresh_cwds(&mut self) {
         if !self.permissions_granted {
             return;
@@ -1537,8 +1564,11 @@ impl State {
             })
             .collect();
         for (tab_position, pane_id) in pane_ids {
-            if let Ok(cwd) = get_pane_cwd(pane_id) {
-                self.cwd_by_tab.insert(tab_position, cwd);
+            match get_pane_cwd(pane_id) {
+                Ok(cwd) => {
+                    self.cwd_by_tab.insert(tab_position, cwd);
+                }
+                Err(error) => self.cwd_error = Some(format!("{pane_id:?}: {error}")),
             }
         }
         self.refresh_repositories();
@@ -2662,6 +2692,29 @@ mod tests {
             tab_display_name(&named, Some(&repo)),
             "NovaID - Main",
             "a name the user chose is never replaced"
+        );
+    }
+
+    #[test]
+    fn a_cached_permission_grant_is_recognised_without_a_result_event() {
+        let mut state = State::default();
+        assert!(
+            !state.permissions_granted,
+            "a plugin starts out unpermitted"
+        );
+
+        // Zellij sends no PermissionRequestResult when it restores a grant from
+        // its cache; the first application-state event is the only evidence.
+        state.update(Event::TabUpdate(vec![TabInfo {
+            position: 0,
+            name: "Tab #1".to_string(),
+            active: true,
+            ..TabInfo::default()
+        }]));
+
+        assert!(
+            state.permissions_granted,
+            "state updates only reach a permitted plugin, so they prove the grant"
         );
     }
 
