@@ -1197,6 +1197,10 @@ impl State {
             }
             let accent = self.state_accent(entry.state);
             let focused = self.focused_terminal_pane == Some(entry.pane_id);
+            let (name_style, detail_style) = vertical_styles(&self.colors, focused);
+            if focused {
+                frame.put(0, y, name_style, "▸");
+            }
             frame.put(
                 1,
                 y,
@@ -1211,11 +1215,7 @@ impl State {
                 3,
                 y,
                 Style {
-                    fg: if focused {
-                        self.colors.cwd_active.fg
-                    } else {
-                        self.colors.tab_normal.fg
-                    },
+                    fg: name_style.fg,
                     bg: self.colors.background,
                     bold: true,
                 },
@@ -1238,10 +1238,15 @@ impl State {
             if let Some(detail) = &entry.detail {
                 let room = content_cols.saturating_sub(used);
                 if room >= 4 {
+                    let detail_style = Style {
+                        fg: if focused { detail_style.fg } else { dim.fg },
+                        bg: self.colors.background,
+                        bold: false,
+                    };
                     frame.put(
                         used,
                         y + 1,
-                        dim,
+                        detail_style,
                         &truncate_line(&format!(" · {detail}"), room),
                     );
                 }
@@ -1472,6 +1477,7 @@ impl State {
         serde_json::json!({
             "view": view,
             "cwd_error": self.cwd_error,
+            "focused_terminal_pane": self.focused_terminal_pane,
             "plugin_id": self.plugin_id,
             "permissions_granted": self.permissions_granted,
             "agent_statuses": statuses,
@@ -1598,10 +1604,16 @@ impl State {
     }
 
     fn track_focused_pane(&mut self) {
-        let focused = self
-            .panes
-            .panes
-            .values()
+        // Every tab reports a focused pane of its own, so only the active tab's
+        // says where the user actually is.
+        let active_tab = self
+            .tabs
+            .iter()
+            .find(|tab| tab.active)
+            .map(|tab| tab.position);
+        let focused = active_tab
+            .and_then(|position| self.panes.panes.get(&position))
+            .into_iter()
             .flatten()
             .find(|pane| pane.is_focused && !pane.is_plugin && !pane.exited)
             .map(|pane| pane.id);
@@ -2894,6 +2906,99 @@ mod tests {
         assert_eq!(tab_totals_label(1, 1, 24), "1 tab · 1 pane");
         // A narrow sidebar keeps the counts rather than a truncated word.
         assert_eq!(tab_totals_label(2, 3, 8), "2 · 3");
+    }
+
+    #[test]
+    fn focus_follows_the_active_tab_not_whichever_tab_comes_first() {
+        let mut state = State::default();
+        state.tabs = vec![
+            TabInfo {
+                position: 0,
+                ..TabInfo::default()
+            },
+            TabInfo {
+                position: 1,
+                active: true,
+                ..TabInfo::default()
+            },
+        ];
+        // Each tab keeps its own focused pane; only the active tab counts.
+        state.panes.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                is_focused: true,
+                ..PaneInfo::default()
+            }],
+        );
+        state.panes.panes.insert(
+            1,
+            vec![PaneInfo {
+                id: 9,
+                is_focused: true,
+                ..PaneInfo::default()
+            }],
+        );
+
+        state.track_focused_pane();
+        assert_eq!(state.focused_terminal_pane, Some(9));
+    }
+
+    #[test]
+    fn the_focused_panes_agent_card_is_marked_like_the_active_tab() {
+        let mut state = State::default();
+        state.view = View::Vertical;
+        state.tabs = vec![TabInfo {
+            position: 0,
+            active: true,
+            ..TabInfo::default()
+        }];
+        state.panes.panes.insert(
+            0,
+            vec![
+                PaneInfo {
+                    id: 7,
+                    is_focused: true,
+                    ..PaneInfo::default()
+                },
+                PaneInfo {
+                    id: 8,
+                    ..PaneInfo::default()
+                },
+            ],
+        );
+        for pane_id in [7, 8] {
+            assert!(state.apply_agent_event(AgentEvent {
+                source: "choco-pi".to_string(),
+                event: "PreToolUse".to_string(),
+                tool: Some("exec".to_string()),
+                summary: None,
+                pane_id,
+                timestamp: Some(1),
+            }));
+        }
+        state.track_focused_pane();
+        assert_eq!(state.focused_terminal_pane, Some(7));
+
+        let colors = Colors::default();
+        let mut frame = AnsiFrame::new(14, 30, &colors);
+        state.render_vertical(&mut frame, 14, 30);
+        let output = frame.finish();
+
+        let marked: Vec<&str> = output
+            .lines()
+            .filter(|line| line.contains("choco-pi") && line.contains('▸'))
+            .collect();
+        assert_eq!(
+            marked.len(),
+            1,
+            "only the focused pane's agent card carries the marker"
+        );
+        assert!(
+            marked[0].contains("1·1"),
+            "the marked card is the focused pane, got {:?}",
+            marked[0]
+        );
     }
 
     #[test]
