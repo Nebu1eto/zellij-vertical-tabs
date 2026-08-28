@@ -384,6 +384,7 @@ impl ZellijPlugin for State {
             Event::PaneUpdate(panes) => {
                 self.panes = panes;
                 self.track_focused_pane();
+                self.detect_agents_from_manifest();
                 self.observe_sidebar_width_change();
                 self.sync_sidebar_widths();
                 self.close_empty_own_tab_if_needed();
@@ -1151,6 +1152,27 @@ impl State {
         }
     }
 
+    fn detect_agents_from_manifest(&mut self) {
+        let running: Vec<(u32, Vec<String>)> = self
+            .panes
+            .panes
+            .values()
+            .flatten()
+            .filter(|pane| !pane.is_plugin && !pane.is_suppressed && !pane.exited)
+            .filter_map(|pane| {
+                pane.terminal_command.as_deref().map(|command| {
+                    (
+                        pane.id,
+                        command.split_whitespace().map(str::to_string).collect(),
+                    )
+                })
+            })
+            .collect();
+        for (pane_id, command) in running {
+            self.update_detected_agent(pane_id, &command, true);
+        }
+    }
+
     fn update_detected_agent(&mut self, pane_id: u32, command: &[String], is_foreground: bool) {
         if !is_foreground {
             return;
@@ -1499,6 +1521,7 @@ fn permissions_for_view(view: View) -> &'static [PermissionType] {
         View::Vertical => &[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
+            PermissionType::ReadCliPipes,
         ],
     }
 }
@@ -2172,6 +2195,33 @@ mod tests {
     #[test]
     fn foreground_agent_processes_are_detected_without_hooks() {
         let mut state = State::default();
+        state.update(Event::PaneUpdate(PaneManifest {
+            panes: HashMap::from([(
+                0,
+                vec![
+                    PaneInfo {
+                        id: 21,
+                        terminal_command: Some("pi".to_string()),
+                        ..PaneInfo::default()
+                    },
+                    PaneInfo {
+                        id: 22,
+                        terminal_command: Some("/opt/homebrew/bin/zsh -l".to_string()),
+                        ..PaneInfo::default()
+                    },
+                ],
+            )]),
+        }));
+        assert_eq!(
+            state
+                .agent_statuses
+                .get(&21)
+                .map(|status| status.message.as_str()),
+            Some("◆ choco-pi detected"),
+            "already-running command panes are detected from the manifest"
+        );
+        assert!(!state.agent_statuses.contains_key(&22));
+
         state.update(Event::CommandChanged(
             PaneId::Terminal(7),
             vec!["claude".to_string()],
@@ -2409,6 +2459,12 @@ mod tests {
     fn permissions_match_view_requirements() {
         assert!(permissions_for_view(View::Horizontal).contains(&PermissionType::RunCommands));
         assert!(!permissions_for_view(View::Vertical).contains(&PermissionType::RunCommands));
+        for view in [View::Horizontal, View::Vertical] {
+            assert!(
+                permissions_for_view(view).contains(&PermissionType::ReadCliPipes),
+                "both views consume coding-agent pipe events"
+            );
+        }
     }
 
     #[test]
