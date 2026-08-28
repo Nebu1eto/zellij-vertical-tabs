@@ -1204,15 +1204,44 @@ impl State {
             let accent = self.state_accent(entry.state);
             let focused = self.focused_terminal_pane == Some(entry.pane_id);
             let (name_style, detail_style) = vertical_styles(&self.colors, focused);
+            // A focused card is highlighted across both of its rows, the way a
+            // tab card is; painting only the marker would leave a stray block.
+            let row_bg = if focused {
+                name_style.bg
+            } else {
+                self.colors.background
+            };
+            let blank = fit_line("", content_cols);
+            for row in [y, y + 1] {
+                frame.put(
+                    0,
+                    row,
+                    Style {
+                        fg: name_style.fg,
+                        bg: row_bg,
+                        bold: false,
+                    },
+                    &blank,
+                );
+            }
             if focused {
-                frame.put(0, y, name_style, "▸");
+                frame.put(
+                    0,
+                    y,
+                    Style {
+                        fg: name_style.fg,
+                        bg: row_bg,
+                        bold: true,
+                    },
+                    "▸",
+                );
             }
             frame.put(
                 1,
                 y,
                 Style {
                     fg: accent,
-                    bg: self.colors.background,
+                    bg: row_bg,
                     bold: entry.state.urgent(),
                 },
                 &entry.state.glyph().to_string(),
@@ -1222,7 +1251,7 @@ impl State {
                 y,
                 Style {
                     fg: name_style.fg,
-                    bg: self.colors.background,
+                    bg: row_bg,
                     bold: true,
                 },
                 &truncate_line(&entry.name, content_cols.saturating_sub(3)),
@@ -1235,7 +1264,7 @@ impl State {
                 y + 1,
                 Style {
                     fg: accent,
-                    bg: self.colors.background,
+                    bg: row_bg,
                     bold: false,
                 },
                 &truncate_line(state_text, content_cols.saturating_sub(3)),
@@ -1246,7 +1275,7 @@ impl State {
                 if room >= 4 {
                     let detail_style = Style {
                         fg: if focused { detail_style.fg } else { dim.fg },
-                        bg: self.colors.background,
+                        bg: row_bg,
                         bold: false,
                     };
                     frame.put(
@@ -2986,6 +3015,69 @@ mod tests {
 
         state.track_focused_pane();
         assert_eq!(state.focused_terminal_pane, Some(9));
+    }
+
+    #[test]
+    fn a_focused_agent_card_is_highlighted_across_its_whole_width() {
+        let mut state = State::default();
+        state.view = View::Vertical;
+        state.tabs = vec![TabInfo {
+            position: 0,
+            active: true,
+            ..TabInfo::default()
+        }];
+        state.panes.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                is_focused: true,
+                ..PaneInfo::default()
+            }],
+        );
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "PreToolUse".to_string(),
+            tool: Some("exec".to_string()),
+            summary: None,
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+        state.track_focused_pane();
+
+        let colors = Colors::default();
+        let mut frame = AnsiFrame::new(10, 30, &colors);
+        state.render_vertical(&mut frame, 10, 30);
+        let output = frame.finish();
+
+        // Every run on the focused card carries one background, trailing pad
+        // included, instead of a single highlighted marker cell.
+        let active_bg = format!(
+            "48;2;{};{};{}m",
+            colors.tab_active.bg.0, colors.tab_active.bg.1, colors.tab_active.bg.2
+        );
+        let flat_bg = format!(
+            "48;2;{};{};{}m",
+            colors.background.0, colors.background.1, colors.background.2
+        );
+        let card = output
+            .find("1·1 choco-pi")
+            .expect("the focused agent is listed");
+        // The frame emits one row per cursor move, so slice the card's row out
+        // and check every run in it.
+        let row_start = output[..card].rfind("\u{1b}[").unwrap();
+        let row_end = output[card..]
+            .find("H\u{1b}[")
+            .map(|offset| card + offset)
+            .unwrap_or(output.len());
+        let row = &output[row_start..row_end];
+        assert!(
+            row.contains(&active_bg),
+            "the focused card uses the active background, got {row:?}"
+        );
+        assert!(
+            !row.contains(&flat_bg),
+            "no part of the focused card keeps the flat background, got {row:?}"
+        );
     }
 
     #[test]
