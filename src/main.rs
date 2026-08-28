@@ -296,6 +296,7 @@ enum AgentState {
     Idle,
     Thinking,
     Working,
+    Compacting,
     Blocked,
     Done,
     Failed,
@@ -306,6 +307,7 @@ impl AgentState {
         match self {
             AgentState::Idle => '○',
             AgentState::Thinking | AgentState::Working => '●',
+            AgentState::Compacting => '◍',
             AgentState::Blocked => '◉',
             AgentState::Done => '✓',
             AgentState::Failed => '✕',
@@ -317,6 +319,7 @@ impl AgentState {
             AgentState::Idle => "idle",
             AgentState::Thinking => "thinking",
             AgentState::Working => "working",
+            AgentState::Compacting => "compacting",
             AgentState::Blocked => "blocked",
             AgentState::Done => "done",
             AgentState::Failed => "failed",
@@ -1087,7 +1090,9 @@ impl State {
     fn state_accent(&self, state: AgentState) -> Rgb {
         match state {
             AgentState::Blocked | AgentState::Failed => self.agent_accent(true),
-            AgentState::Thinking | AgentState::Working => self.agent_accent(false),
+            AgentState::Thinking | AgentState::Working | AgentState::Compacting => {
+                self.agent_accent(false)
+            }
             AgentState::Done => self.colors.context.fg,
             AgentState::Idle => self.colors.cwd_normal.fg,
         }
@@ -1145,6 +1150,10 @@ impl State {
             "PreToolUse" => (AgentState::Working, event.tool.clone(), Some(60)),
             "PostToolUse" => (AgentState::Working, event.tool.clone(), Some(30)),
             "PostToolUseFailure" => (AgentState::Failed, event.tool.clone(), Some(30)),
+            // Compaction blocks the agent's own turn, so it outlives an ordinary
+            // tool call; `tool` carries the trigger (auto or manual) when sent.
+            "PreCompact" => (AgentState::Compacting, event.tool.clone(), Some(180)),
+            "PostCompact" => (AgentState::Thinking, None, Some(60)),
             "PermissionRequest" => (AgentState::Blocked, event.tool.clone(), None),
             "Notification" => (
                 AgentState::Blocked,
@@ -2715,6 +2724,48 @@ mod tests {
         assert!(
             state.permissions_granted,
             "state updates only reach a permitted plugin, so they prove the grant"
+        );
+    }
+
+    #[test]
+    fn compaction_events_show_a_compacting_state() {
+        let mut state = State::default();
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "PreCompact".to_string(),
+            tool: Some("auto".to_string()),
+            summary: Some("rebuild the sidebar".to_string()),
+            pane_id: 3,
+            timestamp: Some(1),
+        }));
+
+        let status = state.agent_statuses.get(&3).unwrap();
+        assert_eq!(status.state, AgentState::Compacting);
+        assert_eq!(status.state.glyph(), '◍');
+        assert_eq!(status.state.label(), "compacting");
+        assert_eq!(status.detail.as_deref(), Some("auto"));
+        assert!(!status.urgent(), "compaction is routine, not a prompt");
+        assert!(
+            status.expires_at.is_some(),
+            "a compaction that never reports back must decay to idle"
+        );
+
+        // Compaction ends and the agent picks its turn back up.
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "PostCompact".to_string(),
+            tool: Some("auto".to_string()),
+            summary: None,
+            pane_id: 3,
+            timestamp: Some(2),
+        }));
+        let status = state.agent_statuses.get(&3).unwrap();
+        assert_eq!(status.state, AgentState::Thinking);
+        assert_eq!(status.detail, None);
+        assert_eq!(
+            status.summary.as_deref(),
+            Some("rebuild the sidebar"),
+            "the task survives compaction"
         );
     }
 
