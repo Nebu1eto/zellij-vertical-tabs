@@ -649,17 +649,23 @@ impl State {
         let center_end = cols.saturating_sub(right_width.saturating_add(1));
         if center_end > center_start {
             let available = center_end - center_start;
-            if let Some(status) = self.primary_agent_status() {
-                let message = self.located_agent_message(status);
-                let rendered = fit_line(&message, available);
-                let width = cell_width(rendered.trim_end());
-                let x = center_start + available.saturating_sub(width) / 2;
-                let style = if status.urgent {
-                    self.colors.agent_urgent
-                } else {
-                    self.colors.agent
-                };
-                frame.put(x, 0, style, rendered.trim_end());
+            if !self.agent_statuses.is_empty() {
+                let segments = self.agent_status_segments(available);
+                let total_width = segments
+                    .iter()
+                    .map(|(text, _)| cell_width(text))
+                    .sum::<usize>()
+                    .min(available);
+                let mut x = center_start + available.saturating_sub(total_width) / 2;
+                for (text, style) in segments {
+                    frame.put(
+                        x,
+                        0,
+                        style,
+                        &truncate_line(&text, center_end.saturating_sub(x)),
+                    );
+                    x += cell_width(&text);
+                }
             } else if let Some(context) = center_context {
                 let rendered = fit_line(&context, available);
                 let width = cell_width(rendered.trim_end());
@@ -859,25 +865,103 @@ impl State {
         true
     }
 
-    fn primary_agent_status(&self) -> Option<&AgentStatus> {
-        self.agent_statuses
-            .values()
-            .max_by_key(|status| (status.urgent, status.sequence))
+    fn sorted_agent_statuses(&self) -> Vec<&AgentStatus> {
+        let mut statuses: Vec<&AgentStatus> = self.agent_statuses.values().collect();
+        statuses.sort_by_key(|status| {
+            (
+                std::cmp::Reverse(status.urgent),
+                std::cmp::Reverse(status.sequence),
+            )
+        });
+        statuses
     }
 
-    fn located_agent_message(&self, status: &AgentStatus) -> String {
-        let message = match self.pane_location(status.pane_id) {
+    fn agent_entry_message(&self, status: &AgentStatus) -> String {
+        match self.pane_location(status.pane_id) {
             Some((tab_position, pane_index)) => {
                 format!("[{}·{}] {}", tab_position + 1, pane_index + 1, status.message)
             }
             None => status.message.clone(),
-        };
-        let additional = self.agent_statuses.len().saturating_sub(1);
-        if additional > 0 {
-            format!("{message} +{additional}")
-        } else {
-            message
         }
+    }
+
+    fn agent_style(&self, urgent: bool) -> Style {
+        if urgent {
+            self.colors.agent_urgent
+        } else {
+            self.colors.agent
+        }
+    }
+
+    fn agent_status_segments(&self, available: usize) -> Vec<(String, Style)> {
+        const SEPARATOR: &str = " | ";
+        if available == 0 || self.agent_statuses.is_empty() {
+            return Vec::new();
+        }
+        let statuses = self.sorted_agent_statuses();
+        let separator_width = cell_width(SEPARATOR);
+        let mut segments: Vec<(String, Style)> = Vec::new();
+        let mut used = 0;
+        let mut included = 0;
+
+        for (index, status) in statuses.iter().enumerate() {
+            let entry = self.agent_entry_message(status);
+            let entry_width = cell_width(&entry);
+            let following = statuses.len() - index - 1;
+            let reserved = if following > 0 {
+                separator_width + cell_width(&format!(" +{following}"))
+            } else {
+                0
+            };
+            let separator_cost = if segments.is_empty() {
+                0
+            } else {
+                separator_width
+            };
+            if !segments.is_empty()
+                && used + separator_cost + entry_width + reserved > available
+            {
+                break;
+            }
+
+            let (text, width) = if used + separator_cost + entry_width > available {
+                let remaining = available.saturating_sub(used + separator_cost);
+                let truncated = truncate_line(&entry, remaining);
+                let width = cell_width(&truncated);
+                (truncated, width)
+            } else {
+                (entry, entry_width)
+            };
+            if width == 0 {
+                break;
+            }
+            if !segments.is_empty() {
+                let inherited = segments
+                    .last()
+                    .map_or_else(|| self.agent_style(status.urgent), |(_, style)| *style);
+                segments.push((SEPARATOR.to_string(), inherited));
+                used += separator_width;
+            }
+            segments.push((text, self.agent_style(status.urgent)));
+            used += width;
+            included += 1;
+            if width < entry_width {
+                break;
+            }
+        }
+
+        let hidden = statuses.len() - included;
+        if hidden > 0 && !segments.is_empty() {
+            let marker = format!(" +{hidden}");
+            if used + separator_width + cell_width(&marker) <= available {
+                let separator_style = segments
+                    .last()
+                    .map_or_else(|| self.agent_style(false), |(_, style)| *style);
+                segments.push((SEPARATOR.to_string(), separator_style));
+                segments.push((marker, self.agent_style(statuses[included].urgent)));
+            }
+        }
+        segments
     }
 
     fn pane_location(&self, pane_id: u32) -> Option<(usize, usize)> {
@@ -1657,10 +1741,13 @@ mod tests {
         }));
         assert_eq!(state.agent_statuses.len(), 2);
 
-        let primary = state.primary_agent_status().unwrap();
-        assert!(primary.urgent, "urgent status takes center priority");
-        assert_eq!(primary.pane_id, 12);
-        assert!(state.located_agent_message(primary).ends_with(" +1"));
+        let segments = state.agent_status_segments(200);
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0].0, "● Claude Code notification");
+        assert_eq!(segments[0].1, state.colors.agent_urgent);
+        assert_eq!(segments[1].0, " | ");
+        assert_eq!(segments[2].0, "… Codex working · Bash");
+        assert_eq!(segments[2].1, state.colors.agent);
 
         assert!(state.apply_agent_event(AgentEvent {
             source: "Claude Code".to_string(),
@@ -1670,9 +1757,47 @@ mod tests {
             timestamp: Some(3),
         }));
         assert_eq!(state.agent_statuses.len(), 1);
-        let primary = state.primary_agent_status().unwrap();
-        assert_eq!(primary.pane_id, 7);
-        assert!(!state.located_agent_message(primary).contains('+'));
+        let segments = state.agent_status_segments(200);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].0, "… Codex working · Bash");
+    }
+
+    #[test]
+    fn horizontal_status_line_fits_entries_and_counts_overflow() {
+        let mut state = State::default();
+        for (pane_id, source, event, timestamp) in [
+            (7, "Codex", "PreToolUse", 1),
+            (12, "Claude Code", "Notification", 2),
+        ] {
+            assert!(state.apply_agent_event(AgentEvent {
+                source: source.to_string(),
+                event: event.to_string(),
+                tool: None,
+                pane_id,
+                timestamp: Some(timestamp),
+            }));
+        }
+
+        let fits_both = state
+            .agent_status_segments(60)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            fits_both,
+            ["● Claude Code notification", " | ", "… Codex working"]
+        );
+
+        let limited = state.agent_status_segments(40);
+        let total: usize = limited.iter().map(|(text, _)| cell_width(text)).sum();
+        assert!(total <= 40);
+        assert_eq!(limited.last().unwrap().0, " +1");
+
+        let tiny = state.agent_status_segments(10);
+        let total: usize = tiny.iter().map(|(text, _)| cell_width(text)).sum();
+        assert!(total <= 10);
+        assert_eq!(tiny.len(), 1, "a lone entry truncates instead of overflowing");
+        assert!(tiny[0].0.ends_with('…'));
     }
 
     #[test]
@@ -1713,10 +1838,20 @@ mod tests {
 
         assert_eq!(state.pane_location(8), Some((0, 1)));
         assert_eq!(state.pane_location(99), None);
-        let primary = state.primary_agent_status().unwrap();
+        let rendered = state
+            .agent_status_segments(500)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect::<Vec<_>>();
         assert_eq!(
-            state.located_agent_message(primary),
-            "[1·2] ⚠ Codex permission required +2"
+            rendered,
+            [
+                "[1·2] ⚠ Codex permission required",
+                " | ",
+                "[2·1] ✓ Codex response complete",
+                " | ",
+                "[1·1] … Codex working",
+            ]
         );
     }
 
