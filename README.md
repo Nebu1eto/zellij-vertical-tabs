@@ -128,6 +128,7 @@ The payload fields used by the plugin are:
   "pane_id": 7,
   "hook_event": "PreToolUse",
   "tool_name": "Bash",
+  "summary": "fix coding agent integration",
   "source_agent": "codex",
   "ts_ms": 1787833000000
 }
@@ -135,7 +136,7 @@ The payload fields used by the plugin are:
 
 Supported sources are `choco-pi`, `claude-code`, and `codex`. Supported status events include session, prompt, tool, permission, notification, subagent, completion, failure, and session-end lifecycle events.
 
-The plugin tracks every agent session independently per `pane_id`, so simultaneous agents in different tabs and panes each keep their own state. Both views list agents in tab-then-pane order. The horizontal center shows as many statuses as fit on one line, each prefixed with its `[tab·pane]` location, and appends `+N` when more agents are active than fit. In the vertical view, each tab block (index/name plus working directory) gains one row per agent running in that tab — `p1`, `p2`, … with the full status message such as `⚠ Claude Code permission required · Bash` — styled with the normal or urgent agent colors. Clicking an agent row focuses that agent's pane; clicking the tab rows switches tabs.
+The plugin tracks every agent session independently per `pane_id`, so simultaneous agents in different tabs and panes each keep their own state. Both views list agents in tab-then-pane order. The horizontal center shows as many statuses as fit on one line, each prefixed with its `[tab·pane]` location, and appends `+N` when more agents are active than fit. In the vertical view, each tab block (index/name plus working directory) gains one row per agent running in that tab — `p1`, `p2`, … with the full status message such as `⚠ Claude Code permission required · Bash`. Agent rows render neutral-tinted: the text carries the normal or urgent color instead of a solid bar. Each tab title row carries a right-aligned rollup glyph — `⚠` when any agent is blocked, `…` while any works, `✓` when all are done — and agent rows append a dimmed task label from the pipe's `summary` field (kept across later events until a new one arrives) or fall back to the pane's terminal title when it looks like a task name. Clicking an agent row focuses that agent's pane; clicking the tab rows switches tabs.
 
 Two states are sticky instead of expiring: a permission request stays until the agent moves on (its own next event replaces it), and a completed response (`✓`) stays until you focus that pane. Transient states still expire on their per-event lifetime, and a session-end event clears the pane's entry.
 

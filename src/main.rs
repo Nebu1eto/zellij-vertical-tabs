@@ -281,6 +281,7 @@ struct GitContext {
 struct AgentStatus {
     pane_id: u32,
     message: String,
+    summary: Option<String>,
     urgent: bool,
     sequence: u64,
     expires_at: Option<u64>,
@@ -293,6 +294,7 @@ struct AgentEvent {
     source: String,
     event: String,
     tool: Option<String>,
+    summary: Option<String>,
     pane_id: u32,
     timestamp: Option<u64>,
 }
@@ -775,9 +777,25 @@ impl State {
             let tab = &self.tabs[index];
             self.visible_vertical_tabs.push((y, tab.position));
             let marker = if tab.active { "▸" } else { " " };
+            let (title_style, cwd_style) = vertical_styles(&self.colors, tab.active);
+            let rollup = self.tab_rollup_glyph(tab.position).map(|(glyph, urgent)| {
+                (
+                    glyph,
+                    Style {
+                        fg: if urgent {
+                            self.colors.agent_urgent.bg
+                        } else {
+                            self.colors.agent.bg
+                        },
+                        bg: title_style.bg,
+                        bold: title_style.bold,
+                    },
+                )
+            });
+            let rollup_width = usize::from(rollup.is_some()) + usize::from(rollup.is_some());
             let title = fit_line(
                 &format!(" {marker} {}  {}", tab.position + 1, tab_name(tab)),
-                content_cols,
+                content_cols.saturating_sub(rollup_width),
             );
             let cwd = self
                 .cwd_by_tab
@@ -785,21 +803,46 @@ impl State {
                 .map(|path| display_path(path, self.configured_home.as_deref()))
                 .unwrap_or_else(|| "—".to_string());
             let cwd = fit_line(&format!("    {cwd}"), content_cols);
-            let (title_style, cwd_style) = vertical_styles(&self.colors, tab.active);
             frame.put(0, y, title_style, &title);
+            if let Some((glyph, style)) = rollup {
+                frame.put(content_cols - 1, y, style, &glyph.to_string());
+            }
             frame.put(0, y + 1, cwd_style, &cwd);
             y += 2;
             let agent_rows = self
                 .agent_rows_for_tab(tab.position)
                 .into_iter()
                 .map(|(index, pane_id, status)| {
-                    (index, pane_id, status.urgent, status.message.clone())
+                    (
+                        index,
+                        pane_id,
+                        status.urgent,
+                        status.message.clone(),
+                        status.summary.clone(),
+                    )
                 })
                 .collect::<Vec<_>>();
-            for (pane_index, pane_id, urgent, message) in agent_rows {
+            for (pane_index, pane_id, urgent, message, summary) in agent_rows {
                 let message =
-                    fit_line(&format!("  ▸p{} {}", pane_index + 1, message), content_cols);
-                frame.put(0, y, self.agent_style(urgent), &message);
+                    truncate_line(&format!("  ▸p{} {}", pane_index + 1, message), content_cols);
+                let remaining = content_cols.saturating_sub(cell_width(&message));
+                let suffix = summary
+                    .or_else(|| self.agent_title_suffix(pane_id))
+                    .filter(|_| remaining >= 8)
+                    .map(|text| truncate_line(&format!(" · {text}"), remaining));
+                frame.put(0, y, self.vertical_agent_row_style(urgent), &message);
+                if let Some(suffix) = &suffix {
+                    frame.put(
+                        cell_width(&message),
+                        y,
+                        Style {
+                            fg: self.colors.cwd_normal.fg,
+                            bg: self.colors.background,
+                            bold: false,
+                        },
+                        suffix,
+                    );
+                }
                 self.agent_focus_targets.push((y, 0, pane_id));
                 y += 1;
             }
@@ -840,6 +883,53 @@ impl State {
         }
         selected.sort_unstable();
         selected
+    }
+
+    fn tab_rollup_glyph(&self, tab_position: usize) -> Option<(char, bool)> {
+        let rows = self.agent_rows_for_tab(tab_position);
+        if rows.is_empty() {
+            return None;
+        }
+        if rows.iter().any(|(_, _, status)| status.urgent) {
+            return Some(('⚠', true));
+        }
+        if rows
+            .iter()
+            .any(|(_, _, status)| status.message.starts_with('…'))
+        {
+            return Some(('…', false));
+        }
+        let newest = rows.iter().max_by_key(|(_, _, status)| status.sequence)?.2;
+        let glyph = newest.message.chars().next().unwrap_or('●');
+        Some((glyph, false))
+    }
+
+    fn vertical_agent_row_style(&self, urgent: bool) -> Style {
+        Style {
+            fg: if urgent {
+                self.colors.agent_urgent.bg
+            } else {
+                self.colors.agent.bg
+            },
+            bg: self.colors.background,
+            bold: urgent,
+        }
+    }
+
+    fn agent_title_suffix(&self, pane_id: u32) -> Option<String> {
+        let title = self
+            .panes
+            .panes
+            .values()
+            .flatten()
+            .find(|pane| pane.id == pane_id && !pane.is_plugin)?
+            .title
+            .trim()
+            .to_string();
+        match title.as_str() {
+            "" | "zsh" | "bash" | "fish" | "sh" | "nu" | "Terminal" => None,
+            _ => Some(title),
+        }
     }
 
     fn agent_rows_for_tab(&self, tab_position: usize) -> Vec<(usize, u32, &AgentStatus)> {
@@ -900,11 +990,17 @@ impl State {
             _ => return false,
         };
         self.agent_sequence = self.agent_sequence.wrapping_add(1);
+        let summary = event.summary.or_else(|| {
+            self.agent_statuses
+                .get(&event.pane_id)
+                .and_then(|status| status.summary.clone())
+        });
         self.agent_statuses.insert(
             event.pane_id,
             AgentStatus {
                 pane_id: event.pane_id,
                 message,
+                summary,
                 urgent,
                 sequence: self.agent_sequence,
                 expires_at: lifetime.map(|seconds| unix_seconds().saturating_add(seconds)),
@@ -1075,6 +1171,7 @@ impl State {
                     AgentStatus {
                         pane_id,
                         message: format!("◆ {label} detected"),
+                        summary: None,
                         urgent: false,
                         sequence: self.agent_sequence,
                         expires_at: None,
@@ -1239,6 +1336,11 @@ fn parse_agent_event(payload: &str) -> Option<AgentEvent> {
             .and_then(Value::as_str)
             .filter(|tool| !tool.is_empty())
             .map(str::to_string),
+        summary: payload
+            .get("summary")
+            .and_then(Value::as_str)
+            .map(|summary| summary.lines().next().unwrap_or("").trim().to_string())
+            .filter(|summary| !summary.is_empty()),
         pane_id: payload.get("pane_id").and_then(Value::as_u64).unwrap_or(0) as u32,
         timestamp: payload.get("ts_ms").and_then(Value::as_u64),
     })
@@ -1806,6 +1908,7 @@ mod tests {
             source: "Codex".to_string(),
             event: "StopFailure".to_string(),
             tool: None,
+            summary: None,
             pane_id: 7,
             timestamp: Some(9),
         }));
@@ -1817,6 +1920,7 @@ mod tests {
             source: "Codex".to_string(),
             event: "SessionEnd".to_string(),
             tool: None,
+            summary: None,
             pane_id: 7,
             timestamp: Some(10),
         }));
@@ -1830,6 +1934,7 @@ mod tests {
             source: "Codex".to_string(),
             event: "PreToolUse".to_string(),
             tool: Some("Bash".to_string()),
+            summary: None,
             pane_id: 7,
             timestamp: Some(1),
         }));
@@ -1837,6 +1942,7 @@ mod tests {
             source: "Claude Code".to_string(),
             event: "Notification".to_string(),
             tool: None,
+            summary: None,
             pane_id: 12,
             timestamp: Some(2),
         }));
@@ -1854,6 +1960,7 @@ mod tests {
             source: "Claude Code".to_string(),
             event: "SessionEnd".to_string(),
             tool: None,
+            summary: None,
             pane_id: 12,
             timestamp: Some(3),
         }));
@@ -1870,6 +1977,7 @@ mod tests {
             source: "Codex".to_string(),
             event: "PermissionRequest".to_string(),
             tool: None,
+            summary: None,
             pane_id: 7,
             timestamp: Some(1),
         }));
@@ -1882,6 +1990,7 @@ mod tests {
             source: "Codex".to_string(),
             event: "Stop".to_string(),
             tool: None,
+            summary: None,
             pane_id: 7,
             timestamp: Some(2),
         }));
@@ -1938,6 +2047,7 @@ mod tests {
             source: "Codex".to_string(),
             event: "PreToolUse".to_string(),
             tool: None,
+            summary: None,
             pane_id: 7,
             timestamp: Some(1),
         }));
@@ -1952,6 +2062,111 @@ mod tests {
         assert_eq!(pane_id, 7);
         assert_eq!(start, 0, "the whole agent row focuses the pane");
         assert_eq!(state.visible_vertical_tabs, vec![(0, 0)]);
+    }
+
+    #[test]
+    fn rollup_glyph_marks_worst_state_and_summary_sticks() {
+        let mut state = State::default();
+        for (pane_id, event, summary) in [
+            (7, "PreToolUse", Some("fix coding agent integration")),
+            (8, "UserPromptSubmit", None),
+        ] {
+            state.panes.panes.entry(0).or_default().push(PaneInfo {
+                id: pane_id,
+                title: "novaid".to_string(),
+                ..PaneInfo::default()
+            });
+            assert!(state.apply_agent_event(AgentEvent {
+                source: "choco-pi".to_string(),
+                event: event.to_string(),
+                tool: None,
+                summary: summary.map(str::to_string),
+                pane_id,
+                timestamp: Some(1),
+            }));
+        }
+
+        let (glyph, urgent) = state.tab_rollup_glyph(0).unwrap();
+        assert_eq!((glyph, urgent), ('…', false));
+
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "Stop".to_string(),
+            tool: None,
+            summary: None,
+            pane_id: 7,
+            timestamp: Some(2),
+        }));
+        let status = &state.agent_statuses[&7];
+        assert_eq!(
+            status.summary.as_deref(),
+            Some("fix coding agent integration"),
+            "the task label survives later events without one"
+        );
+        let (glyph, _) = state.tab_rollup_glyph(0).unwrap();
+        assert_eq!(glyph, '…', "a working agent keeps the working glyph");
+
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "Notification".to_string(),
+            tool: None,
+            summary: None,
+            pane_id: 8,
+            timestamp: Some(3),
+        }));
+        let (glyph, urgent) = state.tab_rollup_glyph(0).unwrap();
+        assert_eq!((glyph, urgent), ('⚠', true));
+
+        assert_eq!(state.agent_title_suffix(7).as_deref(), Some("novaid"));
+        assert_eq!(state.agent_title_suffix(99), None);
+
+        let pane = state.panes.panes.get_mut(&0).unwrap();
+        pane[0].title.clear();
+        pane[1].title = "zsh".to_string();
+        assert_eq!(state.agent_title_suffix(7), None);
+        assert_eq!(state.agent_title_suffix(8), None);
+    }
+
+    #[test]
+    fn agent_rows_render_neutral_with_summary_suffix() {
+        let mut state = State::default();
+        state.view = View::Vertical;
+        state.tabs = vec![TabInfo {
+            position: 0,
+            active: true,
+            ..TabInfo::default()
+        }];
+        state.panes.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                title: "novaid".to_string(),
+                ..PaneInfo::default()
+            }],
+        );
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "PreToolUse".to_string(),
+            tool: None,
+            summary: Some("fix coding agent integration".to_string()),
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+
+        let colors = Colors::default();
+        let mut frame = AnsiFrame::new(4, 80, &colors);
+        state.render_vertical(&mut frame, 4, 80);
+        let output = frame.finish();
+
+        assert!(output.contains("▸p1 … choco-pi working"));
+        assert!(
+            output.contains("· fix coding agent integration"),
+            "the summary suffix follows the status message"
+        );
+        let row_style = state.vertical_agent_row_style(false);
+        assert_eq!(row_style.bg, colors.background, "agent rows stay neutral");
+        assert_eq!(row_style.fg, colors.agent.bg);
+        assert!(state.vertical_agent_row_style(true).bold);
     }
 
     #[test]
@@ -1982,6 +2197,7 @@ mod tests {
             source: "Claude Code".to_string(),
             event: "PreToolUse".to_string(),
             tool: None,
+            summary: None,
             pane_id: 7,
             timestamp: Some(1),
         }));
@@ -2033,6 +2249,7 @@ mod tests {
                 source: source.to_string(),
                 event: event.to_string(),
                 tool: None,
+                summary: None,
                 pane_id,
                 timestamp: Some(timestamp),
             }));
@@ -2085,6 +2302,7 @@ mod tests {
                 source: "Codex".to_string(),
                 event: event.to_string(),
                 tool: None,
+                summary: None,
                 pane_id,
                 timestamp: Some(timestamp),
             }));
@@ -2131,6 +2349,7 @@ mod tests {
             source: "Codex".to_string(),
             event: "PreToolUse".to_string(),
             tool: None,
+            summary: None,
             pane_id: 7,
             timestamp: Some(200),
         }));
@@ -2139,6 +2358,7 @@ mod tests {
             source: "Codex".to_string(),
             event: "SessionEnd".to_string(),
             tool: None,
+            summary: None,
             pane_id: 7,
             timestamp: Some(300),
         }));
@@ -2149,6 +2369,7 @@ mod tests {
             source: "Codex".to_string(),
             event: "PreToolUse".to_string(),
             tool: None,
+            summary: None,
             pane_id: 7,
             timestamp: Some(300),
         }));
@@ -2159,6 +2380,7 @@ mod tests {
             source: "Codex".to_string(),
             event: "SessionStart".to_string(),
             tool: None,
+            summary: None,
             pane_id: 7,
             timestamp: Some(300),
         }));
@@ -2169,6 +2391,7 @@ mod tests {
             source: "Codex".to_string(),
             event: "PostToolUse".to_string(),
             tool: None,
+            summary: None,
             pane_id: 7,
             timestamp: Some(301),
         }));
@@ -2619,6 +2842,7 @@ mod tests {
             source: "Codex".to_string(),
             event: "PreToolUse".to_string(),
             tool: None,
+            summary: None,
             pane_id: 7,
             timestamp: Some(1),
         }));
