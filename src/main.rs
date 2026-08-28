@@ -371,6 +371,55 @@ fn notification_state(message: Option<&str>) -> (AgentState, Option<String>, Opt
     }
 }
 
+/// choco-pi names its tools for the API, not for a status line. These are the
+/// ones worth naming by hand; anything else is humanised from its identifier,
+/// so a new tool still reads as words rather than as code.
+fn choco_pi_tool_label(tool: &str) -> String {
+    let named = match tool {
+        "exec" => "code mode",
+        "mcpScript" => "mcp code",
+        "apply_patch" => "editing",
+        "read_text" => "reading",
+        "read_symbol" | "read_enclosing" => "reading code",
+        "symbol_search" | "ast_grep_search" => "searching code",
+        "module_report" | "project_report" => "mapping code",
+        "lsp_diagnostics" | "diagnostics_report" => "diagnostics",
+        "lsp_navigation" => "navigating code",
+        "web_search" | "synthetic_web_search" => "web search",
+        "fetch_content" => "fetching",
+        "source_check" => "fact check",
+        "shell_start" | "shell_read" | "shell_stop" => "shell",
+        "find" | "ls" => "browsing files",
+        "Agent" | "get_subagent_result" => "subagent",
+        "steer_subagent" | "stop_subagent" => "steering agent",
+        "workflow_run" | "workflow_update" => "workflow",
+        "TaskCreate" | "TaskUpdate" => "task list",
+        "imagegen" => "image",
+        other => return humanised_tool_name(other),
+    };
+    named.to_string()
+}
+
+/// `read_text` reads as "read text" and `agentBrowser` as "agent browser".
+fn humanised_tool_name(tool: &str) -> String {
+    let mut words = String::new();
+    for (index, character) in tool.chars().enumerate() {
+        if character == '_' || character == '-' {
+            words.push(' ');
+        } else if character.is_uppercase() && index > 0 {
+            words.push(' ');
+            words.extend(character.to_lowercase());
+        } else {
+            words.extend(character.to_lowercase());
+        }
+    }
+    let words = words.trim();
+    if words.is_empty() {
+        return tool.to_string();
+    }
+    words.to_string()
+}
+
 /// choco-pi runs either a batch of calls inside one code-mode cell or a single
 /// tool directly, and the card should say which. Other agents keep their own
 /// tool names untouched.
@@ -379,11 +428,7 @@ fn tool_detail(source: &str, tool: Option<String>) -> Option<String> {
     if !source.eq_ignore_ascii_case("choco-pi") {
         return Some(tool);
     }
-    match tool.as_str() {
-        "exec" => Some("code mode".to_string()),
-        "mcpScript" => Some("mcp code".to_string()),
-        other => Some(other.to_string()),
-    }
+    Some(choco_pi_tool_label(&tool))
 }
 
 /// Every plugin instance mounts zellij's shared temp directory at `/tmp`, which
@@ -1310,10 +1355,12 @@ impl State {
                     None => status.source.clone(),
                 };
                 let elapsed = elapsed_label(now.saturating_sub(status.since));
+                // What the agent is doing right now beats the task it is doing
+                // it for; the task returns to the card once the tool call ends.
                 let task = status
-                    .summary
+                    .detail
                     .clone()
-                    .or_else(|| status.detail.clone())
+                    .or_else(|| status.summary.clone())
                     .or_else(|| self.agent_title_suffix(status.pane_id));
                 let detail = match task {
                     Some(task) => Some(format!("{elapsed} · {task}")),
@@ -2890,12 +2937,8 @@ mod tests {
         );
         assert_eq!(entries[0].state, AgentState::Working);
         assert!(
-            entries[0]
-                .detail
-                .as_deref()
-                .unwrap()
-                .ends_with("· fix coding agent integration"),
-            "the task label wins over the tool name"
+            entries[0].detail.as_deref().unwrap().ends_with("· exec"),
+            "the running tool names what the agent is doing now"
         );
         assert_eq!(entries[1].state, AgentState::Blocked);
         assert!(entries[1].detail.as_deref().unwrap().ends_with("· Bash"));
@@ -3390,6 +3433,54 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_card_shows_the_running_tool_then_falls_back_to_the_task() {
+        let mut state = State::default();
+        state.panes.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                ..PaneInfo::default()
+            }],
+        );
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "PreToolUse".to_string(),
+            tool: Some("read_symbol".to_string()),
+            summary: Some("ship the sidebar".to_string()),
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+        let entry = state.agent_entries().remove(0);
+        assert!(
+            entry
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.ends_with("· reading code")),
+            "the card names the running tool, got {:?}",
+            entry.detail
+        );
+
+        // With the turn over there is no tool, so the task takes the slot back.
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "Stop".to_string(),
+            tool: None,
+            summary: None,
+            pane_id: 7,
+            timestamp: Some(2),
+        }));
+        let entry = state.agent_entries().remove(0);
+        assert!(
+            entry
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.ends_with("· ship the sidebar")),
+            "the task returns once the tool call ends, got {:?}",
+            entry.detail
+        );
+    }
+
+    #[test]
     fn choco_pi_code_mode_reads_differently_from_a_single_tool_call() {
         assert_eq!(
             tool_detail("choco-pi", Some("exec".to_string())).as_deref(),
@@ -3397,9 +3488,19 @@ mod tests {
         );
         assert_eq!(
             tool_detail("choco-pi", Some("read_text".to_string())).as_deref(),
-            Some("read_text"),
-            "a single tool call keeps its own name"
+            Some("reading"),
+            "a single tool call reads as what it does"
         );
+        assert_eq!(
+            tool_detail("choco-pi", Some("apply_patch".to_string())).as_deref(),
+            Some("editing")
+        );
+        // An unknown tool still reads as words rather than as an identifier.
+        assert_eq!(
+            tool_detail("choco-pi", Some("evaluate_browser".to_string())).as_deref(),
+            Some("evaluate browser")
+        );
+        assert_eq!(humanised_tool_name("agentBrowser"), "agent browser");
         assert_eq!(
             tool_detail("claude-code", Some("exec".to_string())).as_deref(),
             Some("exec"),
