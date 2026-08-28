@@ -240,6 +240,8 @@ struct State {
     permissions_granted: bool,
     agent_statuses: HashMap<u32, AgentStatus>,
     agent_sequence: u64,
+    focused_terminal_pane: Option<u32>,
+    agent_focus_targets: Vec<(usize, usize, u32)>,
     timer_ticks: u8,
     git_refresh_interval: u8,
     timezone_offset_hours: i32,
@@ -283,6 +285,8 @@ struct AgentStatus {
     urgent: bool,
     sequence: u64,
     expires_at: Option<u64>,
+    detected: bool,
+    clear_on_focus: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -378,6 +382,7 @@ impl ZellijPlugin for State {
             }
             Event::PaneUpdate(panes) => {
                 self.panes = panes;
+                self.track_focused_pane();
                 self.observe_sidebar_width_change();
                 self.sync_sidebar_widths();
                 self.close_empty_own_tab_if_needed();
@@ -392,10 +397,13 @@ impl ZellijPlugin for State {
                     self.cwd_by_tab.insert(tab_position, cwd);
                 }
             }
-            Event::CommandChanged(pane_id, command, is_foreground, _)
-                if Some(pane_id) == self.active_pane_id =>
-            {
-                self.active_command = is_foreground.then(|| command_label(&command));
+            Event::CommandChanged(pane_id, command, is_foreground, _) => {
+                if Some(pane_id) == self.active_pane_id {
+                    self.active_command = is_foreground.then(|| command_label(&command));
+                }
+                if let PaneId::Terminal(id) = pane_id {
+                    self.update_detected_agent(id, &command, is_foreground);
+                }
             }
             Event::RunCommandResult(exit_code, stdout, _, context) => {
                 self.git_refresh_pending = false;
@@ -431,8 +439,18 @@ impl ZellijPlugin for State {
             Event::Mouse(Mouse::LeftClick(line, column)) if line >= 0 => {
                 match self.view {
                     View::Vertical => {
-                        let index = line as usize / 2;
-                        if let Some(position) = self.visible_vertical_tabs.get(index) {
+                        let line_index = line as usize;
+                        if let Some((_, _, pane_id)) = self
+                            .agent_focus_targets
+                            .iter()
+                            .find(|(target_line, start, _)| {
+                                *target_line == line_index && column >= *start
+                            })
+                        {
+                            focus_terminal_pane(*pane_id, false, false);
+                        } else if let Some(position) =
+                            self.visible_vertical_tabs.get(line_index / 2)
+                        {
                             switch_tab_to((*position + 1) as u32);
                         }
                     }
@@ -731,6 +749,7 @@ impl State {
 
     fn render_vertical(&mut self, frame: &mut AnsiFrame, rows: usize, cols: usize) {
         self.visible_vertical_tabs.clear();
+        self.agent_focus_targets.clear();
         let separator = vertical_separator_content(
             rows,
             cols,
@@ -756,7 +775,7 @@ impl State {
             let badge = self.agent_badge_for_tab(tab.position);
             let badge_width = badge
                 .as_ref()
-                .map_or(0, |(text, _)| cell_width(text))
+                .map_or(0, |(text, _, _)| cell_width(text))
                 .min(content_cols);
             let title = fit_line(
                 &format!(" {marker} {}  {}", tab.position + 1, tab_name(tab)),
@@ -771,7 +790,7 @@ impl State {
             let y = visible_index * 2;
             let (title_style, cwd_style) = vertical_styles(&self.colors, tab.active);
             frame.put(0, y, title_style, &title);
-            if let Some((text, urgent)) = badge {
+            if let Some((text, urgent, pane_id)) = badge {
                 let style = if urgent {
                     self.colors.agent_urgent
                 } else {
@@ -779,6 +798,8 @@ impl State {
                 };
                 let text = fit_line(&text, badge_width);
                 frame.put(content_cols - badge_width, y, style, text.trim_end());
+                self.agent_focus_targets
+                    .push((y, content_cols - badge_width, pane_id));
             }
             frame.put(0, y + 1, cwd_style, &cwd);
         }
@@ -815,7 +836,7 @@ impl State {
                 '⚠',
                 format!("⚠ {} permission required{tool}", event.source),
                 true,
-                Some(30),
+                None,
             ),
             "Notification" => (
                 '●',
@@ -839,7 +860,7 @@ impl State {
                 '✓',
                 format!("✓ {} response complete", event.source),
                 false,
-                Some(8),
+                None,
             ),
             "StopFailure" => (
                 '✕',
@@ -860,6 +881,8 @@ impl State {
                 urgent,
                 sequence: self.agent_sequence,
                 expires_at: lifetime.map(|seconds| unix_seconds().saturating_add(seconds)),
+                detected: false,
+                clear_on_focus: event.event == "Stop",
             },
         );
         true
@@ -977,7 +1000,7 @@ impl State {
         None
     }
 
-    fn agent_badge_for_tab(&self, tab_position: usize) -> Option<(String, bool)> {
+    fn agent_badge_for_tab(&self, tab_position: usize) -> Option<(String, bool, u32)> {
         let panes = self.panes.panes.get(&tab_position)?;
         let mut statuses: Vec<&AgentStatus> = panes
             .iter()
@@ -994,7 +1017,71 @@ impl State {
             .map(|status| status.marker.to_string())
             .collect::<Vec<_>>()
             .join(" ");
-        Some((format!(" {markers}"), urgent))
+        Some((format!(" {markers}"), urgent, statuses[0].pane_id))
+    }
+
+    fn track_focused_pane(&mut self) {
+        let focused = self
+            .panes
+            .panes
+            .values()
+            .flatten()
+            .find(|pane| pane.is_focused && !pane.is_plugin && !pane.exited)
+            .map(|pane| pane.id);
+        if focused == self.focused_terminal_pane {
+            return;
+        }
+        self.focused_terminal_pane = focused;
+        if let Some(pane_id) = focused {
+            let clear = self
+                .agent_statuses
+                .get(&pane_id)
+                .is_some_and(|status| status.clear_on_focus);
+            if clear {
+                self.agent_statuses.remove(&pane_id);
+            }
+        }
+    }
+
+    fn update_detected_agent(&mut self, pane_id: u32, command: &[String], is_foreground: bool) {
+        if !is_foreground {
+            return;
+        }
+        let label = command
+            .first()
+            .and_then(|arg| arg.rsplit('/').next())
+            .map(|name| name.to_ascii_lowercase())
+            .and_then(|name| detected_agent_label(&name));
+        match label {
+            Some(label) => {
+                if self.agent_statuses.contains_key(&pane_id) {
+                    return;
+                }
+                self.agent_sequence = self.agent_sequence.wrapping_add(1);
+                self.agent_statuses.insert(
+                    pane_id,
+                    AgentStatus {
+                        pane_id,
+                        marker: '◆',
+                        message: format!("◆ {label} detected"),
+                        urgent: false,
+                        sequence: self.agent_sequence,
+                        expires_at: None,
+                        detected: true,
+                        clear_on_focus: false,
+                    },
+                );
+            }
+            None => {
+                let detected = self
+                    .agent_statuses
+                    .get(&pane_id)
+                    .is_some_and(|status| status.detected);
+                if detected {
+                    self.agent_statuses.remove(&pane_id);
+                }
+            }
+        }
     }
 
     fn right_content(&self) -> (String, String) {
@@ -1154,6 +1241,20 @@ fn agent_label(source: &str) -> String {
         other => other,
     }
     .to_string()
+}
+
+fn detected_agent_label(command: &str) -> Option<&'static str> {
+    match command {
+        "claude" | "claude-code" => Some("Claude Code"),
+        "codex" => Some("Codex"),
+        "pi" | "choco-pi" => Some("choco-pi"),
+        "opencode" => Some("OpenCode"),
+        "gemini" => Some("Gemini"),
+        "cursor-agent" | "cursor" => Some("Cursor"),
+        "aider" => Some("Aider"),
+        "amp" => Some("Amp"),
+        _ => None,
+    }
 }
 
 fn horizontal_visible_indices(tabs: &[TabInfo], active: usize, width: usize) -> Vec<usize> {
@@ -1763,6 +1864,165 @@ mod tests {
     }
 
     #[test]
+    fn done_status_stays_until_the_pane_gains_focus() {
+        let mut state = State::default();
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "Codex".to_string(),
+            event: "PermissionRequest".to_string(),
+            tool: None,
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+        assert!(
+            state.agent_statuses[&7].expires_at.is_none(),
+            "blocked prompt must not fade on its own"
+        );
+
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "Codex".to_string(),
+            event: "Stop".to_string(),
+            tool: None,
+            pane_id: 7,
+            timestamp: Some(2),
+        }));
+        let status = &state.agent_statuses[&7];
+        assert!(status.expires_at.is_none(), "done stays until viewed");
+        assert!(status.clear_on_focus);
+
+        let unrelated_focus = || PaneManifest {
+            panes: HashMap::from([(
+                0,
+                vec![
+                    PaneInfo {
+                        id: 12,
+                        is_focused: true,
+                        ..PaneInfo::default()
+                    },
+                    PaneInfo {
+                        id: 7,
+                        ..PaneInfo::default()
+                    },
+                ],
+            )]),
+        };
+        state.update(Event::PaneUpdate(unrelated_focus()));
+        assert!(state.agent_statuses.contains_key(&7));
+
+        let mut refocus = unrelated_focus();
+        refocus.panes.get_mut(&0).unwrap()[0].is_focused = false;
+        refocus.panes.get_mut(&0).unwrap()[1].is_focused = true;
+        state.update(Event::PaneUpdate(refocus));
+        assert!(
+            state.agent_statuses.is_empty(),
+            "viewing the pane clears its done status"
+        );
+    }
+
+    #[test]
+    fn vertical_badges_register_click_focus_targets() {
+        let mut state = State::default();
+        state.view = View::Vertical;
+        state.tabs = vec![TabInfo {
+            position: 0,
+            active: true,
+            ..TabInfo::default()
+        }];
+        state.panes.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                ..PaneInfo::default()
+            }],
+        );
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "Codex".to_string(),
+            event: "PreToolUse".to_string(),
+            tool: None,
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+
+        let colors = Colors::default();
+        let mut frame = AnsiFrame::new(4, 30, &colors);
+        state.render_vertical(&mut frame, 4, 30);
+
+        assert_eq!(state.agent_focus_targets.len(), 1);
+        let (line, start, pane_id) = state.agent_focus_targets[0];
+        assert_eq!(line, 0, "the target sits on the tab's title row");
+        assert_eq!(pane_id, 7);
+        assert!(start > 0 && start < 30);
+    }
+
+    #[test]
+    fn foreground_agent_processes_are_detected_without_hooks() {
+        let mut state = State::default();
+        state.update(Event::CommandChanged(
+            PaneId::Terminal(7),
+            vec!["claude".to_string()],
+            true,
+            vec![],
+        ));
+        let status = state.agent_statuses.get(&7).unwrap();
+        assert_eq!(status.message, "◆ Claude Code detected");
+        assert!(status.detected);
+        assert_eq!(status.marker, '◆');
+
+        state.update(Event::CommandChanged(
+            PaneId::Terminal(7),
+            vec!["ls".to_string()],
+            false,
+            vec![],
+        ));
+        assert!(
+            state.agent_statuses.contains_key(&7),
+            "background command changes do not disturb detection"
+        );
+
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "Claude Code".to_string(),
+            event: "PreToolUse".to_string(),
+            tool: None,
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+        let status = state.agent_statuses.get(&7).unwrap();
+        assert!(!status.detected, "hook events take over the pane's state");
+        assert_eq!(status.message, "… Claude Code working");
+
+        state.update(Event::CommandChanged(
+            PaneId::Terminal(7),
+            vec!["zsh".to_string()],
+            true,
+            vec![],
+        ));
+        assert!(
+            state.agent_statuses.contains_key(&7),
+            "hook-reported state survives the agent exiting"
+        );
+
+        state.update(Event::CommandChanged(
+            PaneId::Terminal(9),
+            vec!["/usr/local/bin/opencode".to_string()],
+            true,
+            vec![],
+        ));
+        assert_eq!(
+            state.agent_statuses.get(&9).unwrap().message,
+            "◆ OpenCode detected"
+        );
+        state.update(Event::CommandChanged(
+            PaneId::Terminal(9),
+            vec!["zsh".to_string()],
+            true,
+            vec![],
+        ));
+        assert!(
+            !state.agent_statuses.contains_key(&9),
+            "detected placeholder disappears when the agent exits"
+        );
+    }
+
+    #[test]
     fn horizontal_status_line_fits_entries_and_counts_overflow() {
         let mut state = State::default();
         for (pane_id, source, event, timestamp) in [
@@ -1826,12 +2086,14 @@ mod tests {
             }));
         }
 
-        let (badge, urgent) = state.agent_badge_for_tab(0).unwrap();
+        let (badge, urgent, pane) = state.agent_badge_for_tab(0).unwrap();
         assert!(urgent);
+        assert_eq!(pane, 8, "the badge focus target is the most recent agent");
         assert_eq!(badge, " ⚠ …", "newest marker leads the tab badge");
 
-        let (badge, urgent) = state.agent_badge_for_tab(1).unwrap();
+        let (badge, urgent, pane) = state.agent_badge_for_tab(1).unwrap();
         assert!(!urgent);
+        assert_eq!(pane, 12);
         assert_eq!(badge, " ✓");
 
         assert!(state.agent_badge_for_tab(2).is_none());
