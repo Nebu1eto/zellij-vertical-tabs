@@ -11,6 +11,7 @@ use zellij_tile::prelude::*;
 
 const AGENT_PIPE: &str = "coding-agent-status";
 const AGENT_FOCUS_PIPE: &str = "coding-agent-status:focus";
+const DEBUG_TRIGGER_PATH: &str = "/host/.zellij-vtabs-debug";
 const VERTICAL_SIDEBAR_URL_SUFFIX: &str = "/vertical-sidebar.wasm";
 const WIDTH_SYNC_MAX_ATTEMPTS: u8 = 64;
 const DEFAULT_DATETIME_FORMAT: &str = "%Y-%m-%d %H:%M";
@@ -290,6 +291,15 @@ struct AgentStatus {
 }
 
 #[derive(Clone, Debug)]
+struct AgentRowLayout {
+    pane_id: u32,
+    urgent: bool,
+    line: String,
+    inline_label: Option<String>,
+    label_line: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 struct AgentEvent {
     source: String,
     event: String,
@@ -311,7 +321,10 @@ register_plugin!(State);
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.plugin_id = Some(get_plugin_ids().plugin_id);
-        set_selectable(false);
+        // Stay focusable until permissions are granted: zellij renders its
+        // permission prompt inside this pane and withholds every event until it
+        // is answered, which is impossible on a pane nobody can focus.
+        set_selectable(true);
         self.view = match configuration.get("view").map(String::as_str) {
             Some("vertical") => View::Vertical,
             _ => View::Horizontal,
@@ -429,6 +442,17 @@ impl ZellijPlugin for State {
             }
             Event::Timer(_) => {
                 set_timeout(1.0);
+                if std::path::Path::new(DEBUG_TRIGGER_PATH).exists() {
+                    let view = match self.view {
+                        View::Horizontal => "horizontal",
+                        View::Vertical => "vertical",
+                    };
+                    let path = format!(
+                        "/host/.zellij-vtabs-debug-{view}-{}.json",
+                        self.plugin_id.unwrap_or(0)
+                    );
+                    let _ = std::fs::write(path, self.debug_snapshot());
+                }
                 let now = unix_seconds();
                 self.agent_statuses.retain(|_, status| {
                     status.expires_at.is_none_or(|expires_at| expires_at > now)
@@ -771,7 +795,7 @@ impl State {
             return;
         }
         let active_index = self.tabs.iter().position(|tab| tab.active).unwrap_or(0);
-        let window = self.vertical_window(active_index, rows);
+        let window = self.vertical_window(active_index, rows, content_cols);
 
         let mut y = 0;
         for index in window {
@@ -810,42 +834,23 @@ impl State {
             }
             frame.put(0, y + 1, cwd_style, &cwd);
             y += 2;
-            let agent_rows = self
-                .agent_rows_for_tab(tab.position)
-                .into_iter()
-                .map(|(index, pane_id, status)| {
-                    (
-                        index,
-                        pane_id,
-                        status.urgent,
-                        status.message.clone(),
-                        status.summary.clone(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            for (pane_index, pane_id, urgent, message, summary) in agent_rows {
-                let message =
-                    truncate_line(&format!("  ▸p{} {}", pane_index + 1, message), content_cols);
-                let remaining = content_cols.saturating_sub(cell_width(&message));
-                let suffix = summary
-                    .or_else(|| self.agent_title_suffix(pane_id))
-                    .filter(|_| remaining >= 8)
-                    .map(|text| truncate_line(&format!(" · {text}"), remaining));
-                frame.put(0, y, self.vertical_agent_row_style(urgent), &message);
-                if let Some(suffix) = &suffix {
-                    frame.put(
-                        cell_width(&message),
-                        y,
-                        Style {
-                            fg: self.colors.cwd_normal.fg,
-                            bg: self.colors.background,
-                            bold: false,
-                        },
-                        suffix,
-                    );
+            let label_style = Style {
+                fg: self.colors.cwd_normal.fg,
+                bg: self.colors.background,
+                bold: false,
+            };
+            for row in self.agent_row_layout(tab.position, content_cols) {
+                frame.put(0, y, self.vertical_agent_row_style(row.urgent), &row.line);
+                if let Some(label) = &row.inline_label {
+                    frame.put(cell_width(&row.line), y, label_style, label);
                 }
-                self.agent_focus_targets.push((y, 0, pane_id));
+                self.agent_focus_targets.push((y, 0, row.pane_id));
                 y += 1;
+                if let Some(label_line) = &row.label_line {
+                    frame.put(0, y, label_style, label_line);
+                    self.agent_focus_targets.push((y, 0, row.pane_id));
+                    y += 1;
+                }
             }
             if y >= rows {
                 break;
@@ -853,30 +858,36 @@ impl State {
         }
     }
 
-    fn vertical_tab_height(&self, tab_position: usize) -> usize {
-        2 + self.agent_rows_for_tab(tab_position).len()
+    fn vertical_tab_height(&self, tab_position: usize, content_cols: usize) -> usize {
+        2 + self
+            .agent_row_layout(tab_position, content_cols)
+            .iter()
+            .map(|row| 1 + usize::from(row.label_line.is_some()))
+            .sum::<usize>()
     }
 
-    fn vertical_window(&self, active_index: usize, rows: usize) -> Vec<usize> {
+    fn vertical_window(&self, active_index: usize, rows: usize, content_cols: usize) -> Vec<usize> {
         if self.tabs.is_empty() {
             return Vec::new();
         }
         let active_index = active_index.min(self.tabs.len() - 1);
         let mut selected = vec![active_index];
-        let mut used = self.vertical_tab_height(self.tabs[active_index].position);
+        let mut used = self.vertical_tab_height(self.tabs[active_index].position, content_cols);
         let mut up = active_index;
         let mut down = active_index;
         loop {
             if down + 1 < self.tabs.len()
-                && used + self.vertical_tab_height(self.tabs[down + 1].position) <= rows
+                && used + self.vertical_tab_height(self.tabs[down + 1].position, content_cols)
+                    <= rows
             {
                 down += 1;
-                used += self.vertical_tab_height(self.tabs[down].position);
+                used += self.vertical_tab_height(self.tabs[down].position, content_cols);
                 selected.push(down);
-            } else if up > 0 && used + self.vertical_tab_height(self.tabs[up - 1].position) <= rows
+            } else if up > 0
+                && used + self.vertical_tab_height(self.tabs[up - 1].position, content_cols) <= rows
             {
                 up -= 1;
-                used += self.vertical_tab_height(self.tabs[up].position);
+                used += self.vertical_tab_height(self.tabs[up].position, content_cols);
                 selected.push(up);
             } else {
                 break;
@@ -884,6 +895,43 @@ impl State {
         }
         selected.sort_unstable();
         selected
+    }
+
+    /// One agent's rendered rows: the status line, the label that fits beside it,
+    /// and the label continuation line used when the sidebar is too narrow.
+    fn agent_row_layout(&self, tab_position: usize, content_cols: usize) -> Vec<AgentRowLayout> {
+        const INLINE_LABEL_MINIMUM: usize = 12;
+        self.agent_rows_for_tab(tab_position)
+            .into_iter()
+            .map(|(pane_index, pane_id, status)| {
+                let line = truncate_line(
+                    &format!("  ▸p{} {}", pane_index + 1, status.message),
+                    content_cols,
+                );
+                let remaining = content_cols.saturating_sub(cell_width(&line));
+                let label = status
+                    .summary
+                    .clone()
+                    .or_else(|| self.agent_title_suffix(pane_id));
+                let (inline_label, label_line) = match label {
+                    Some(label) if remaining >= INLINE_LABEL_MINIMUM => {
+                        (Some(truncate_line(&format!(" · {label}"), remaining)), None)
+                    }
+                    Some(label) if content_cols > 6 => (
+                        None,
+                        Some(truncate_line(&format!("      {label}"), content_cols)),
+                    ),
+                    _ => (None, None),
+                };
+                AgentRowLayout {
+                    pane_id,
+                    urgent: status.urgent,
+                    line,
+                    inline_label,
+                    label_line,
+                }
+            })
+            .collect()
     }
 
     fn tab_rollup_glyph(&self, tab_position: usize) -> Option<(char, bool)> {
@@ -1010,6 +1058,78 @@ impl State {
             },
         );
         true
+    }
+
+    fn debug_snapshot(&self) -> String {
+        let view = match self.view {
+            View::Horizontal => "horizontal",
+            View::Vertical => "vertical",
+        };
+        let statuses = self
+            .sorted_agent_statuses()
+            .iter()
+            .map(|status| {
+                serde_json::json!({
+                    "pane_id": status.pane_id,
+                    "message": status.message,
+                    "summary": status.summary,
+                    "urgent": status.urgent,
+                    "detected": status.detected,
+                    "location": self.pane_location(status.pane_id),
+                })
+            })
+            .collect::<Vec<_>>();
+        let tabs = self
+            .tabs
+            .iter()
+            .map(|tab| {
+                serde_json::json!({
+                    "position": tab.position,
+                    "name": tab_name(tab),
+                    "rows": self
+                        .agent_rows_for_tab(tab.position)
+                        .iter()
+                        .map(|(index, pane_id, status)| {
+                            serde_json::json!({
+                                "pane_index": index,
+                                "pane_id": pane_id,
+                                "message": status.message,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                    "rollup": self.tab_rollup_glyph(tab.position).map(|(glyph, urgent)| {
+                        serde_json::json!({ "glyph": glyph.to_string(), "urgent": urgent })
+                    }),
+                    "terminal_panes": self
+                        .panes
+                        .panes
+                        .get(&tab.position)
+                        .map(|panes| {
+                            panes
+                                .iter()
+                                .filter(|pane| !pane.is_plugin && !pane.is_suppressed)
+                                .map(|pane| {
+                                    serde_json::json!({
+                                        "id": pane.id,
+                                        "title": pane.title,
+                                        "command": pane.terminal_command,
+                                        "exited": pane.exited,
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "view": view,
+            "plugin_id": self.plugin_id,
+            "permissions_granted": self.permissions_granted,
+            "agent_statuses": statuses,
+            "tabs": tabs,
+        })
+        .to_string()
     }
 
     fn sorted_agent_statuses(&self) -> Vec<&AgentStatus> {
@@ -2193,6 +2313,49 @@ mod tests {
     }
 
     #[test]
+    fn narrow_sidebars_wrap_the_task_label_onto_its_own_row() {
+        let mut state = State::default();
+        state.panes.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                ..PaneInfo::default()
+            }],
+        );
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "PreToolUse".to_string(),
+            tool: None,
+            summary: Some("fix coding agent integration".to_string()),
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+
+        // A 29-column sidebar cannot fit the label beside "  ▸p1 … choco-pi working".
+        let rows = state.agent_row_layout(0, 29);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].inline_label.is_none());
+        assert_eq!(
+            rows[0].label_line.as_deref(),
+            Some("      fix coding agent integ…")
+        );
+        assert_eq!(
+            state.vertical_tab_height(0, 29),
+            4,
+            "the wrapped label claims its own row"
+        );
+
+        // A wide sidebar keeps the label inline on the status row.
+        let rows = state.agent_row_layout(0, 80);
+        assert!(rows[0].label_line.is_none());
+        assert_eq!(
+            rows[0].inline_label.as_deref(),
+            Some(" · fix coding agent integration")
+        );
+        assert_eq!(state.vertical_tab_height(0, 80), 3);
+    }
+
+    #[test]
     fn foreground_agent_processes_are_detected_without_hooks() {
         let mut state = State::default();
         state.update(Event::PaneUpdate(PaneManifest {
@@ -2904,15 +3067,15 @@ mod tests {
         }));
 
         // 8 rows: tab1 (3) + tab2 (2) + tab0 or tab3 (2 each, both fit only once more)
-        let window = state.vertical_window(2, 8);
+        let window = state.vertical_window(2, 8, 30);
         assert!(window.contains(&2), "the active tab stays visible");
         let used: usize = window
             .iter()
-            .map(|i| state.vertical_tab_height(state.tabs[*i].position))
+            .map(|i| state.vertical_tab_height(state.tabs[*i].position, 30))
             .sum();
         assert!(used <= 8);
 
-        let window = state.vertical_window(4, 2);
+        let window = state.vertical_window(4, 2, 30);
         assert_eq!(
             window,
             vec![4],
@@ -2920,6 +3083,6 @@ mod tests {
         );
 
         state.tabs = Vec::new();
-        assert!(state.vertical_window(0, 10).is_empty());
+        assert!(state.vertical_window(0, 10, 30).is_empty());
     }
 }

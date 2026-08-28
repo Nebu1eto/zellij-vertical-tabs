@@ -1,2 +1,6 @@
 /target/
 *.wasm
+
+# local plugin debug snapshots
+.zellij-vtabs-debug
+.zellij-vtabs-debug-*.json
