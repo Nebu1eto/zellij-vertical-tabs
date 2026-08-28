@@ -331,6 +331,11 @@ impl AgentState {
     }
 }
 
+/// An agent falls silent between hooks while the model streams, so an active
+/// state must not decay on a tool-call timescale: it ends when the agent reports
+/// back. This timeout only catches an agent that died without a closing hook.
+const AGENT_STALL_SECONDS: u64 = 900;
+
 #[derive(Clone, Debug)]
 struct AgentStatus {
     pane_id: u32,
@@ -1145,25 +1150,49 @@ impl State {
 
     fn apply_agent_event(&mut self, event: AgentEvent) -> bool {
         let (state, detail, lifetime) = match event.event.as_str() {
-            "SessionStart" => (AgentState::Idle, None, Some(30)),
-            "UserPromptSubmit" => (AgentState::Thinking, None, Some(60)),
-            "PreToolUse" => (AgentState::Working, event.tool.clone(), Some(60)),
-            "PostToolUse" => (AgentState::Working, event.tool.clone(), Some(30)),
-            "PostToolUseFailure" => (AgentState::Failed, event.tool.clone(), Some(30)),
+            "SessionStart" => (AgentState::Idle, None, None),
+            "UserPromptSubmit" => (AgentState::Thinking, None, Some(AGENT_STALL_SECONDS)),
+            "PreToolUse" => (
+                AgentState::Working,
+                event.tool.clone(),
+                Some(AGENT_STALL_SECONDS),
+            ),
+            "PostToolUse" => (
+                AgentState::Working,
+                event.tool.clone(),
+                Some(AGENT_STALL_SECONDS),
+            ),
+            "PostToolUseFailure" => (
+                AgentState::Failed,
+                event.tool.clone(),
+                Some(AGENT_STALL_SECONDS),
+            ),
             // Compaction blocks the agent's own turn, so it outlives an ordinary
             // tool call; `tool` carries the trigger (auto or manual) when sent.
-            "PreCompact" => (AgentState::Compacting, event.tool.clone(), Some(180)),
-            "PostCompact" => (AgentState::Thinking, None, Some(60)),
+            "PreCompact" => (
+                AgentState::Compacting,
+                event.tool.clone(),
+                Some(AGENT_STALL_SECONDS),
+            ),
+            "PostCompact" => (AgentState::Thinking, None, Some(AGENT_STALL_SECONDS)),
             "PermissionRequest" => (AgentState::Blocked, event.tool.clone(), None),
             "Notification" => (
                 AgentState::Blocked,
                 Some("notification".to_string()),
                 Some(60),
             ),
-            "SubagentStart" => (AgentState::Working, Some("subagent".to_string()), Some(60)),
-            "SubagentStop" => (AgentState::Working, Some("subagent".to_string()), Some(30)),
+            "SubagentStart" => (
+                AgentState::Working,
+                Some("subagent".to_string()),
+                Some(AGENT_STALL_SECONDS),
+            ),
+            "SubagentStop" => (
+                AgentState::Working,
+                Some("subagent".to_string()),
+                Some(AGENT_STALL_SECONDS),
+            ),
             "Stop" => (AgentState::Done, None, None),
-            "StopFailure" => (AgentState::Failed, None, Some(30)),
+            "StopFailure" => (AgentState::Failed, None, Some(AGENT_STALL_SECONDS)),
             "SessionEnd" => return self.agent_statuses.remove(&event.pane_id).is_some(),
             _ => return false,
         };
@@ -2724,6 +2753,36 @@ mod tests {
         assert!(
             state.permissions_granted,
             "state updates only reach a permitted plugin, so they prove the grant"
+        );
+    }
+
+    #[test]
+    fn an_active_agent_stays_active_while_the_model_is_quiet() {
+        let mut state = State::default();
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "UserPromptSubmit".to_string(),
+            tool: None,
+            summary: Some("fix the sidebar".to_string()),
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+
+        // A minute of silence is ordinary: the model is still producing the turn.
+        let now = unix_seconds();
+        let status = &state.agent_statuses[&7];
+        assert_eq!(status.state, AgentState::Thinking);
+        assert!(
+            status.expires_at.is_some_and(|expires| expires > now + 300),
+            "a thinking agent must outlive a long quiet stretch, got {:?}",
+            status.expires_at.map(|expires| expires.saturating_sub(now))
+        );
+
+        state.update(Event::Timer(1.0));
+        assert_eq!(
+            state.agent_statuses[&7].state,
+            AgentState::Thinking,
+            "the timer must not report a working agent as idle"
         );
     }
 
