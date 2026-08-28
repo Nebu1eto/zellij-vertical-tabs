@@ -1130,6 +1130,12 @@ impl State {
             }
             let tab = &self.tabs[index];
             let (title_style, cwd_style) = vertical_styles(&self.colors, tab.active);
+            // The card's second row is supporting detail: the active tab marks
+            // itself with the marker and color, not with a second bold row.
+            let cwd_style = Style {
+                bold: false,
+                ..cwd_style
+            };
             let marker = if tab.active { "▸" } else { " " };
             let repo = self.repo_by_tab.get(&tab.position);
             let title = fit_line(
@@ -2898,6 +2904,44 @@ mod tests {
         assert_eq!(elapsed_label(3599), "59m");
         assert_eq!(elapsed_label(3600), "1h0m");
         assert_eq!(elapsed_label(7860), "2h11m");
+    }
+
+    #[test]
+    fn the_active_tabs_detail_row_is_not_bold() {
+        let mut state = State::default();
+        state.view = View::Vertical;
+        state.tabs = vec![TabInfo {
+            position: 0,
+            name: "work".to_string(),
+            active: true,
+            ..TabInfo::default()
+        }];
+        state.cwd_by_tab.insert(0, PathBuf::from("/tmp/work"));
+
+        let colors = Colors::default();
+        let mut frame = AnsiFrame::new(6, 30, &colors);
+        state.render_vertical(&mut frame, 6, 30);
+        let output = frame.finish();
+
+        // Read the style the frame emits immediately before the detail text.
+        let text = output
+            .find("/tmp/work")
+            .expect("the active tab shows its directory");
+        let style_start = output[..text]
+            .rfind("\u{1b}[")
+            .expect("the text carries a style");
+        let style = &output[style_start..text];
+        assert!(
+            style.starts_with("\u{1b}[22;"),
+            "the detail row stays unbolded, got {style:?}"
+        );
+
+        let title = output.find("▸1 work").expect("the active tab is marked");
+        let title_style_start = output[..title].rfind("\u{1b}[").unwrap();
+        assert!(
+            output[title_style_start..title].starts_with("\u{1b}[1;"),
+            "the title row keeps its bold"
+        );
     }
 
     #[test]
