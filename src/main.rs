@@ -1080,6 +1080,16 @@ impl State {
         }
     }
 
+    /// Terminal panes across every tab; plugin panes are chrome, not content.
+    fn pane_total(&self) -> usize {
+        self.panes
+            .panes
+            .values()
+            .flatten()
+            .filter(|pane| !pane.is_plugin && !pane.is_suppressed)
+            .count()
+    }
+
     /// Tab cards: index and name on the first row, working directory below.
     fn render_vertical_tabs(
         &mut self,
@@ -1087,13 +1097,33 @@ impl State {
         budget: usize,
         content_cols: usize,
     ) -> usize {
-        if budget < 2 || self.tabs.is_empty() {
+        if budget < 3 || self.tabs.is_empty() {
             return 0;
         }
-        let active_index = self.tabs.iter().position(|tab| tab.active).unwrap_or(0);
-        let window = vertical_tab_window(self.tabs.len(), active_index, budget / 2);
+        let dim = Style {
+            fg: self.colors.cwd_normal.fg,
+            bg: self.colors.background,
+            bold: false,
+        };
+        frame.put(0, 0, dim, &fit_line(" Tabs", content_cols));
+        // The counts say how much of the session is off screen when the window
+        // shows only part of it.
+        let totals = tab_totals_label(
+            self.tabs.len(),
+            self.pane_total(),
+            content_cols.saturating_sub(cell_width(" Tabs") + 2),
+        );
+        frame.put(
+            content_cols.saturating_sub(cell_width(&totals) + 1),
+            0,
+            dim,
+            &totals,
+        );
 
-        let mut y = 0;
+        let active_index = self.tabs.iter().position(|tab| tab.active).unwrap_or(0);
+        let window = vertical_tab_window(self.tabs.len(), active_index, (budget - 1) / 2);
+
+        let mut y = 1;
         for index in window {
             if y + 2 > budget {
                 break;
@@ -1151,7 +1181,7 @@ impl State {
         y += 1;
 
         let entries = self.agent_entries();
-        frame.put(0, y, dim, &fit_line(" agents", content_cols));
+        frame.put(0, y, dim, &fit_line(" Agents", content_cols));
         let count = entries.len().to_string();
         frame.put(
             content_cols.saturating_sub(cell_width(&count) + 1),
@@ -2414,6 +2444,23 @@ fn elapsed_label(seconds: u64) -> String {
     }
 }
 
+/// Spelling the units out is worth the room when there is room; a narrow
+/// sidebar falls back to the bare counts rather than truncating a word.
+fn tab_totals_label(tabs: usize, panes: usize, room: usize) -> String {
+    let plural = |count: usize, noun: &str| {
+        if count == 1 {
+            format!("{count} {noun}")
+        } else {
+            format!("{count} {noun}s")
+        }
+    };
+    let spelled = format!("{} · {}", plural(tabs, "tab"), plural(panes, "pane"));
+    if cell_width(&spelled) <= room {
+        return spelled;
+    }
+    format!("{tabs} · {panes}")
+}
+
 fn vertical_styles(colors: &Colors, active: bool) -> (Style, Style) {
     if active {
         (colors.tab_active, colors.cwd_active)
@@ -2842,6 +2889,14 @@ mod tests {
     }
 
     #[test]
+    fn the_tab_header_spells_out_its_totals_when_they_fit() {
+        assert_eq!(tab_totals_label(2, 3, 24), "2 tabs · 3 panes");
+        assert_eq!(tab_totals_label(1, 1, 24), "1 tab · 1 pane");
+        // A narrow sidebar keeps the counts rather than a truncated word.
+        assert_eq!(tab_totals_label(2, 3, 8), "2 · 3");
+    }
+
+    #[test]
     fn vertical_sidebar_renders_tab_and_agent_sections() {
         let mut state = State::default();
         state.view = View::Vertical;
@@ -2877,7 +2932,12 @@ mod tests {
         state.render_vertical(&mut frame, 12, 30);
         let output = frame.finish();
 
-        assert!(output.contains("agents"), "the agent section has a header");
+        assert!(output.contains(" Tabs"), "the tab section has a header");
+        assert!(output.contains(" Agents"), "the agent section has a header");
+        assert!(
+            output.contains("2 tabs · 1 pane"),
+            "the tab header counts tabs and panes"
+        );
         assert!(
             output.contains("1·1 choco-pi"),
             "cards show tab·pane and agent"
@@ -2887,8 +2947,8 @@ mod tests {
 
         assert_eq!(
             state.visible_vertical_tabs,
-            vec![(0, 0), (2, 1)],
-            "tab cards occupy two rows each"
+            vec![(1, 0), (3, 1)],
+            "tab cards occupy two rows each below the section header"
         );
         let agent_rows: Vec<usize> = state
             .agent_focus_targets
