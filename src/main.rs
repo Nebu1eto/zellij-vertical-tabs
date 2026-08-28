@@ -252,7 +252,7 @@ struct State {
     vertical_separator_enabled: bool,
     vertical_separator_char: String,
     colors: Colors,
-    visible_vertical_tabs: Vec<usize>,
+    visible_vertical_tabs: Vec<(usize, usize)>,
     visible_horizontal_tabs: Vec<TabHitbox>,
     last_hook_timestamp_by_pane: HashMap<u32, u64>,
     session_end_timestamp_by_pane: HashMap<u32, u64>,
@@ -280,7 +280,6 @@ struct GitContext {
 #[derive(Clone, Debug)]
 struct AgentStatus {
     pane_id: u32,
-    marker: char,
     message: String,
     urgent: bool,
     sequence: u64,
@@ -428,8 +427,9 @@ impl ZellijPlugin for State {
             Event::Timer(_) => {
                 set_timeout(1.0);
                 let now = unix_seconds();
-                self.agent_statuses
-                    .retain(|_, status| status.expires_at.is_none_or(|expires_at| expires_at > now));
+                self.agent_statuses.retain(|_, status| {
+                    status.expires_at.is_none_or(|expires_at| expires_at > now)
+                });
                 self.timer_ticks = self.timer_ticks.wrapping_add(1);
                 if self.timer_ticks >= self.git_refresh_interval {
                     self.timer_ticks = 0;
@@ -440,16 +440,18 @@ impl ZellijPlugin for State {
                 match self.view {
                     View::Vertical => {
                         let line_index = line as usize;
-                        if let Some((_, _, pane_id)) = self
-                            .agent_focus_targets
-                            .iter()
-                            .find(|(target_line, start, _)| {
-                                *target_line == line_index && column >= *start
-                            })
+                        if let Some((_, _, pane_id)) =
+                            self.agent_focus_targets
+                                .iter()
+                                .find(|(target_line, start, _)| {
+                                    *target_line == line_index && column >= *start
+                                })
                         {
                             focus_terminal_pane(*pane_id, false, false);
-                        } else if let Some(position) =
-                            self.visible_vertical_tabs.get(line_index / 2)
+                        } else if let Some((_, position)) =
+                            self.visible_vertical_tabs.iter().find(|(title_line, _)| {
+                                line_index == *title_line || line_index == *title_line + 1
+                            })
                         {
                             switch_tab_to((*position + 1) as u32);
                         }
@@ -765,21 +767,17 @@ impl State {
         if rows < 2 {
             return;
         }
-        let capacity = rows / 2;
         let active_index = self.tabs.iter().position(|tab| tab.active).unwrap_or(0);
-        let range = visible_range(self.tabs.len(), active_index, capacity);
+        let window = self.vertical_window(active_index, rows);
 
-        for (visible_index, tab) in self.tabs[range].iter().enumerate() {
-            self.visible_vertical_tabs.push(tab.position);
+        let mut y = 0;
+        for index in window {
+            let tab = &self.tabs[index];
+            self.visible_vertical_tabs.push((y, tab.position));
             let marker = if tab.active { "▸" } else { " " };
-            let badge = self.agent_badge_for_tab(tab.position);
-            let badge_width = badge
-                .as_ref()
-                .map_or(0, |(text, _, _)| cell_width(text))
-                .min(content_cols);
             let title = fit_line(
                 &format!(" {marker} {}  {}", tab.position + 1, tab_name(tab)),
-                content_cols.saturating_sub(badge_width),
+                content_cols,
             );
             let cwd = self
                 .cwd_by_tab
@@ -787,22 +785,77 @@ impl State {
                 .map(|path| display_path(path, self.configured_home.as_deref()))
                 .unwrap_or_else(|| "—".to_string());
             let cwd = fit_line(&format!("    {cwd}"), content_cols);
-            let y = visible_index * 2;
             let (title_style, cwd_style) = vertical_styles(&self.colors, tab.active);
             frame.put(0, y, title_style, &title);
-            if let Some((text, urgent, pane_id)) = badge {
-                let style = if urgent {
-                    self.colors.agent_urgent
-                } else {
-                    self.colors.agent
-                };
-                let text = fit_line(&text, badge_width);
-                frame.put(content_cols - badge_width, y, style, text.trim_end());
-                self.agent_focus_targets
-                    .push((y, content_cols - badge_width, pane_id));
-            }
             frame.put(0, y + 1, cwd_style, &cwd);
+            y += 2;
+            let agent_rows = self
+                .agent_rows_for_tab(tab.position)
+                .into_iter()
+                .map(|(index, pane_id, status)| {
+                    (index, pane_id, status.urgent, status.message.clone())
+                })
+                .collect::<Vec<_>>();
+            for (pane_index, pane_id, urgent, message) in agent_rows {
+                let message =
+                    fit_line(&format!("  ▸p{} {}", pane_index + 1, message), content_cols);
+                frame.put(0, y, self.agent_style(urgent), &message);
+                self.agent_focus_targets.push((y, 0, pane_id));
+                y += 1;
+            }
+            if y >= rows {
+                break;
+            }
         }
+    }
+
+    fn vertical_tab_height(&self, tab_position: usize) -> usize {
+        2 + self.agent_rows_for_tab(tab_position).len()
+    }
+
+    fn vertical_window(&self, active_index: usize, rows: usize) -> Vec<usize> {
+        if self.tabs.is_empty() {
+            return Vec::new();
+        }
+        let active_index = active_index.min(self.tabs.len() - 1);
+        let mut selected = vec![active_index];
+        let mut used = self.vertical_tab_height(self.tabs[active_index].position);
+        let mut up = active_index;
+        let mut down = active_index;
+        loop {
+            if down + 1 < self.tabs.len()
+                && used + self.vertical_tab_height(self.tabs[down + 1].position) <= rows
+            {
+                down += 1;
+                used += self.vertical_tab_height(self.tabs[down].position);
+                selected.push(down);
+            } else if up > 0 && used + self.vertical_tab_height(self.tabs[up - 1].position) <= rows
+            {
+                up -= 1;
+                used += self.vertical_tab_height(self.tabs[up].position);
+                selected.push(up);
+            } else {
+                break;
+            }
+        }
+        selected.sort_unstable();
+        selected
+    }
+
+    fn agent_rows_for_tab(&self, tab_position: usize) -> Vec<(usize, u32, &AgentStatus)> {
+        self.panes
+            .panes
+            .get(&tab_position)
+            .into_iter()
+            .flatten()
+            .filter(|pane| !pane.is_plugin && !pane.is_suppressed)
+            .enumerate()
+            .filter_map(|(index, pane)| {
+                self.agent_statuses
+                    .get(&pane.id)
+                    .map(|status| (index, pane.id, status))
+            })
+            .collect()
     }
 
     fn apply_agent_event(&mut self, event: AgentEvent) -> bool {
@@ -811,59 +864,34 @@ impl State {
             .as_deref()
             .map(|tool| format!(" · {tool}"))
             .unwrap_or_default();
-        let (marker, message, urgent, lifetime) = match event.event.as_str() {
-            "SessionStart" => ('◆', format!("◆ {} connected", event.source), false, Some(5)),
-            "UserPromptSubmit" => (
-                '…',
-                format!("… {} thinking", event.source),
-                false,
-                Some(60),
-            ),
-            "PreToolUse" => (
-                '…',
-                format!("… {} working{tool}", event.source),
-                false,
-                Some(60),
-            ),
-            "PostToolUse" => ('…', format!("… {} working", event.source), false, Some(30)),
+        let (message, urgent, lifetime) = match event.event.as_str() {
+            "SessionStart" => (format!("◆ {} connected", event.source), false, Some(5)),
+            "UserPromptSubmit" => (format!("… {} thinking", event.source), false, Some(60)),
+            "PreToolUse" => (format!("… {} working{tool}", event.source), false, Some(60)),
+            "PostToolUse" => (format!("… {} working", event.source), false, Some(30)),
             "PostToolUseFailure" => (
-                '✕',
                 format!("✕ {} tool failed{tool}", event.source),
                 true,
                 Some(12),
             ),
             "PermissionRequest" => (
-                '⚠',
                 format!("⚠ {} permission required{tool}", event.source),
                 true,
                 None,
             ),
-            "Notification" => (
-                '●',
-                format!("● {} notification", event.source),
-                true,
-                Some(12),
-            ),
+            "Notification" => (format!("● {} notification", event.source), true, Some(12)),
             "SubagentStart" => (
-                '◇',
                 format!("◇ {} subagent started", event.source),
                 false,
                 Some(12),
             ),
             "SubagentStop" => (
-                '◇',
                 format!("◇ {} subagent complete", event.source),
                 false,
                 Some(8),
             ),
-            "Stop" => (
-                '✓',
-                format!("✓ {} response complete", event.source),
-                false,
-                None,
-            ),
+            "Stop" => (format!("✓ {} response complete", event.source), false, None),
             "StopFailure" => (
-                '✕',
                 format!("✕ {} response failed", event.source),
                 true,
                 Some(12),
@@ -876,7 +904,6 @@ impl State {
             event.pane_id,
             AgentStatus {
                 pane_id: event.pane_id,
-                marker,
                 message,
                 urgent,
                 sequence: self.agent_sequence,
@@ -891,8 +918,10 @@ impl State {
     fn sorted_agent_statuses(&self) -> Vec<&AgentStatus> {
         let mut statuses: Vec<&AgentStatus> = self.agent_statuses.values().collect();
         statuses.sort_by_key(|status| {
+            let location = || self.pane_location(status.pane_id);
             (
-                std::cmp::Reverse(status.urgent),
+                location().map_or(usize::MAX, |(tab, _)| tab),
+                location().map_or(usize::MAX, |(_, pane)| pane),
                 std::cmp::Reverse(status.sequence),
             )
         });
@@ -902,7 +931,12 @@ impl State {
     fn agent_entry_message(&self, status: &AgentStatus) -> String {
         match self.pane_location(status.pane_id) {
             Some((tab_position, pane_index)) => {
-                format!("[{}·{}] {}", tab_position + 1, pane_index + 1, status.message)
+                format!(
+                    "[{}·{}] {}",
+                    tab_position + 1,
+                    pane_index + 1,
+                    status.message
+                )
             }
             None => status.message.clone(),
         }
@@ -941,9 +975,7 @@ impl State {
             } else {
                 separator_width
             };
-            if !segments.is_empty()
-                && used + separator_cost + entry_width + reserved > available
-            {
+            if !segments.is_empty() && used + separator_cost + entry_width + reserved > available {
                 break;
             }
 
@@ -1000,26 +1032,6 @@ impl State {
         None
     }
 
-    fn agent_badge_for_tab(&self, tab_position: usize) -> Option<(String, bool, u32)> {
-        let panes = self.panes.panes.get(&tab_position)?;
-        let mut statuses: Vec<&AgentStatus> = panes
-            .iter()
-            .filter(|pane| !pane.is_plugin && !pane.is_suppressed)
-            .filter_map(|pane| self.agent_statuses.get(&pane.id))
-            .collect();
-        statuses.sort_by_key(|status| std::cmp::Reverse(status.sequence));
-        if statuses.is_empty() {
-            return None;
-        }
-        let urgent = statuses.iter().any(|status| status.urgent);
-        let markers = statuses
-            .iter()
-            .map(|status| status.marker.to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        Some((format!(" {markers}"), urgent, statuses[0].pane_id))
-    }
-
     fn track_focused_pane(&mut self) {
         let focused = self
             .panes
@@ -1062,7 +1074,6 @@ impl State {
                     pane_id,
                     AgentStatus {
                         pane_id,
-                        marker: '◆',
                         message: format!("◆ {label} detected"),
                         urgent: false,
                         sequence: self.agent_sequence,
@@ -1304,17 +1315,6 @@ fn tab_name(tab: &TabInfo) -> String {
     } else {
         tab.name.clone()
     }
-}
-
-fn visible_range(total: usize, active_index: usize, capacity: usize) -> std::ops::Range<usize> {
-    if total <= capacity {
-        return 0..total;
-    }
-    let half = capacity / 2;
-    let start = active_index
-        .saturating_sub(half)
-        .min(total.saturating_sub(capacity));
-    start..start + capacity
 }
 
 fn display_path(path: &Path, configured_home: Option<&Path>) -> String {
@@ -1919,7 +1919,7 @@ mod tests {
     }
 
     #[test]
-    fn vertical_badges_register_click_focus_targets() {
+    fn vertical_agent_rows_register_click_focus_targets() {
         let mut state = State::default();
         state.view = View::Vertical;
         state.tabs = vec![TabInfo {
@@ -1948,9 +1948,10 @@ mod tests {
 
         assert_eq!(state.agent_focus_targets.len(), 1);
         let (line, start, pane_id) = state.agent_focus_targets[0];
-        assert_eq!(line, 0, "the target sits on the tab's title row");
+        assert_eq!(line, 2, "the agent row sits below title and cwd");
         assert_eq!(pane_id, 7);
-        assert!(start > 0 && start < 30);
+        assert_eq!(start, 0, "the whole agent row focuses the pane");
+        assert_eq!(state.visible_vertical_tabs, vec![(0, 0)]);
     }
 
     #[test]
@@ -1965,7 +1966,6 @@ mod tests {
         let status = state.agent_statuses.get(&7).unwrap();
         assert_eq!(status.message, "◆ Claude Code detected");
         assert!(status.detected);
-        assert_eq!(status.marker, '◆');
 
         state.update(Event::CommandChanged(
             PaneId::Terminal(7),
@@ -2056,12 +2056,16 @@ mod tests {
         let tiny = state.agent_status_segments(10);
         let total: usize = tiny.iter().map(|(text, _)| cell_width(text)).sum();
         assert!(total <= 10);
-        assert_eq!(tiny.len(), 1, "a lone entry truncates instead of overflowing");
+        assert_eq!(
+            tiny.len(),
+            1,
+            "a lone entry truncates instead of overflowing"
+        );
         assert!(tiny[0].0.ends_with('…'));
     }
 
     #[test]
-    fn agent_badges_mark_each_tab_with_running_agents() {
+    fn agent_rows_and_segments_follow_tab_then_pane_order() {
         let mut state = State::default();
         for (tab_position, pane_id, event, timestamp) in [
             (0, 7, "PreToolUse", 1),
@@ -2086,17 +2090,20 @@ mod tests {
             }));
         }
 
-        let (badge, urgent, pane) = state.agent_badge_for_tab(0).unwrap();
-        assert!(urgent);
-        assert_eq!(pane, 8, "the badge focus target is the most recent agent");
-        assert_eq!(badge, " ⚠ …", "newest marker leads the tab badge");
-
-        let (badge, urgent, pane) = state.agent_badge_for_tab(1).unwrap();
-        assert!(!urgent);
-        assert_eq!(pane, 12);
-        assert_eq!(badge, " ✓");
-
-        assert!(state.agent_badge_for_tab(2).is_none());
+        let rows = state.agent_rows_for_tab(0);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows.iter()
+                .map(|(index, pane_id, status)| (*index, *pane_id, status.urgent))
+                .collect::<Vec<_>>(),
+            [(0, 7, false), (1, 8, true)],
+            "rows follow pane order within the tab"
+        );
+        let rows = state.agent_rows_for_tab(1);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, 0);
+        assert_eq!(rows[0].1, 12);
+        assert!(state.agent_rows_for_tab(2).is_empty());
 
         assert_eq!(state.pane_location(8), Some((0, 1)));
         assert_eq!(state.pane_location(99), None);
@@ -2108,11 +2115,11 @@ mod tests {
         assert_eq!(
             rendered,
             [
+                "[1·1] … Codex working",
+                " | ",
                 "[1·2] ⚠ Codex permission required",
                 " | ",
                 "[2·1] ✓ Codex response complete",
-                " | ",
-                "[1·1] … Codex working",
             ]
         );
     }
@@ -2591,9 +2598,48 @@ mod tests {
     }
 
     #[test]
-    fn keeps_active_tab_in_the_visible_window() {
-        assert_eq!(visible_range(10, 0, 3), 0..3);
-        assert_eq!(visible_range(10, 5, 3), 4..7);
-        assert_eq!(visible_range(10, 9, 3), 7..10);
+    fn vertical_window_keeps_active_visible_and_respects_rows() {
+        let mut state = State::default();
+        state.tabs = (0..5)
+            .map(|position| TabInfo {
+                position,
+                active: position == 2,
+                ..TabInfo::default()
+            })
+            .collect();
+        // tab 1 hosts one agent, so it costs 3 rows instead of 2
+        state.panes.panes.insert(
+            1,
+            vec![PaneInfo {
+                id: 7,
+                ..PaneInfo::default()
+            }],
+        );
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "Codex".to_string(),
+            event: "PreToolUse".to_string(),
+            tool: None,
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+
+        // 8 rows: tab1 (3) + tab2 (2) + tab0 or tab3 (2 each, both fit only once more)
+        let window = state.vertical_window(2, 8);
+        assert!(window.contains(&2), "the active tab stays visible");
+        let used: usize = window
+            .iter()
+            .map(|i| state.vertical_tab_height(state.tabs[*i].position))
+            .sum();
+        assert!(used <= 8);
+
+        let window = state.vertical_window(4, 2);
+        assert_eq!(
+            window,
+            vec![4],
+            "a too-short view still shows the active tab"
+        );
+
+        state.tabs = Vec::new();
+        assert!(state.vertical_window(0, 10).is_empty());
     }
 }
