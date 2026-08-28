@@ -366,19 +366,11 @@ impl ZellijPlugin for State {
             .clamp(1, u8::MAX as u64) as u8;
         self.colors = Colors::from_config(&configuration);
 
-        request_permission(permissions_for_view(self.view));
-        subscribe(&[
-            EventType::ModeUpdate,
-            EventType::TabUpdate,
-            EventType::PaneUpdate,
-            EventType::CwdChanged,
-            EventType::CommandChanged,
-            EventType::RunCommandResult,
-            EventType::PermissionRequestResult,
-            EventType::Timer,
-            EventType::Mouse,
-        ]);
+        // Subscribe before asking: an already-cached grant is answered immediately,
+        // and the result event is lost when nothing is listening for it yet.
+        subscribe_to_events();
         set_timeout(1.0);
+        request_permission(permissions_for_view(self.view));
     }
 
     fn update(&mut self, event: Event) -> bool {
@@ -435,6 +427,10 @@ impl ZellijPlugin for State {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 set_selectable(view_selectable(self.view));
                 self.permissions_granted = true;
+                // Subscriptions and timers requested before the grant are dropped,
+                // so re-arm them here or the pane never receives another event.
+                subscribe_to_events();
+                set_timeout(1.0);
                 self.active_pane_id = None;
                 self.refresh_active_pane();
                 self.refresh_cwds();
@@ -807,11 +803,7 @@ impl State {
                 (
                     glyph,
                     Style {
-                        fg: if urgent {
-                            self.colors.agent_urgent.bg
-                        } else {
-                            self.colors.agent.bg
-                        },
+                        fg: self.agent_accent(urgent),
                         bg: title_style.bg,
                         bold: title_style.bold,
                     },
@@ -953,13 +945,26 @@ impl State {
         Some((glyph, false))
     }
 
+    /// Accent colour for agent text drawn on the sidebar background. A chip-style
+    /// configuration (dark text on a coloured block) contributes its background as
+    /// the accent; a flat configuration already stores the accent as its foreground,
+    /// so reusing the background there would paint the row invisible.
+    fn agent_accent(&self, urgent: bool) -> Rgb {
+        let style = if urgent {
+            self.colors.agent_urgent
+        } else {
+            self.colors.agent
+        };
+        if style.bg == self.colors.background {
+            style.fg
+        } else {
+            style.bg
+        }
+    }
+
     fn vertical_agent_row_style(&self, urgent: bool) -> Style {
         Style {
-            fg: if urgent {
-                self.colors.agent_urgent.bg
-            } else {
-                self.colors.agent.bg
-            },
+            fg: self.agent_accent(urgent),
             bg: self.colors.background,
             bold: urgent,
         }
@@ -1628,6 +1633,20 @@ fn command_label(command: &[String]) -> String {
 
 fn mode_label(mode: InputMode) -> String {
     format!("{mode:?}").to_uppercase()
+}
+
+fn subscribe_to_events() {
+    subscribe(&[
+        EventType::ModeUpdate,
+        EventType::TabUpdate,
+        EventType::PaneUpdate,
+        EventType::CwdChanged,
+        EventType::CommandChanged,
+        EventType::RunCommandResult,
+        EventType::PermissionRequestResult,
+        EventType::Timer,
+        EventType::Mouse,
+    ]);
 }
 
 fn permissions_for_view(view: View) -> &'static [PermissionType] {
@@ -2310,6 +2329,21 @@ mod tests {
         assert_eq!(row_style.bg, colors.background, "agent rows stay neutral");
         assert_eq!(row_style.fg, colors.agent.bg);
         assert!(state.vertical_agent_row_style(true).bold);
+
+        // A flat configuration (accent already in the foreground, background matching
+        // the sidebar) must not paint the row in the background colour.
+        let mut configuration = BTreeMap::new();
+        configuration.insert("color_background".to_string(), "#2e3440".to_string());
+        configuration.insert("color_agent_fg".to_string(), "#a3be8c".to_string());
+        configuration.insert("color_agent_bg".to_string(), "#2e3440".to_string());
+        let mut flat = State::default();
+        flat.colors = Colors::from_config(&configuration);
+        let flat_style = flat.vertical_agent_row_style(false);
+        assert_eq!(flat_style.fg, Rgb(163, 190, 140));
+        assert_ne!(
+            flat_style.fg, flat_style.bg,
+            "agent text must never match the sidebar background"
+        );
     }
 
     #[test]
