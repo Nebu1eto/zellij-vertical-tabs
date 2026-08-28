@@ -237,6 +237,9 @@ struct State {
     cwd_by_tab: HashMap<usize, PathBuf>,
     repo_by_tab: HashMap<usize, RepoInfo>,
     repo_cwd_by_tab: HashMap<usize, PathBuf>,
+    /// The shared status file's content as this instance last saw it, so a write
+    /// happens only on a real change and a read only on a foreign one.
+    agent_sync_payload: Option<String>,
     cwd_error: Option<String>,
     configured_home: Option<PathBuf>,
     git_context: Option<GitContext>,
@@ -329,6 +332,19 @@ impl AgentState {
     fn urgent(self) -> bool {
         matches!(self, AgentState::Blocked | AgentState::Failed)
     }
+
+    fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "idle" => Some(AgentState::Idle),
+            "thinking" => Some(AgentState::Thinking),
+            "working" => Some(AgentState::Working),
+            "compacting" => Some(AgentState::Compacting),
+            "blocked" => Some(AgentState::Blocked),
+            "done" => Some(AgentState::Done),
+            "failed" => Some(AgentState::Failed),
+            _ => None,
+        }
+    }
 }
 
 /// An agent falls silent between hooks while the model streams, so an active
@@ -351,6 +367,105 @@ fn tool_detail(source: &str, tool: Option<String>) -> Option<String> {
     }
 }
 
+/// Every plugin instance mounts zellij's shared temp directory at `/tmp`, which
+/// makes it the one place a sidebar in a new tab can pick up the agent statuses
+/// its siblings already collected.
+const AGENT_SYNC_DIR: &str = "/tmp";
+
+fn agent_sync_path(session_name: &str) -> Option<String> {
+    let name: String = session_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let name = name.trim_matches('.');
+    if name.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}/zellij-agent-status-{}.json",
+        AGENT_SYNC_DIR, name
+    ))
+}
+
+/// Statuses detected from the pane manifest stay out of the shared file: every
+/// instance reads the same manifest, so sharing them would only fight the local
+/// detection.
+fn encode_agent_statuses(statuses: &HashMap<u32, AgentStatus>) -> String {
+    let mut shared: Vec<&AgentStatus> = statuses.values().filter(|s| !s.detected).collect();
+    shared.sort_by_key(|status| status.pane_id);
+    let entries: Vec<Value> = shared
+        .iter()
+        .map(|status| {
+            serde_json::json!({
+                "pane_id": status.pane_id,
+                "source": status.source,
+                "state": status.state.label(),
+                "detail": status.detail,
+                "summary": status.summary,
+                "since": status.since,
+                "expires_at": status.expires_at,
+                "updated_at": status.updated_at,
+                "clear_on_focus": status.clear_on_focus,
+            })
+        })
+        .collect();
+    serde_json::json!({ "version": 1, "statuses": entries }).to_string()
+}
+
+fn decode_agent_statuses(payload: &str) -> Vec<AgentStatus> {
+    let Ok(value) = serde_json::from_str::<Value>(payload) else {
+        return Vec::new();
+    };
+    value
+        .get("statuses")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let pane_id = entry.get("pane_id").and_then(Value::as_u64)? as u32;
+                    let state = entry
+                        .get("state")
+                        .and_then(Value::as_str)
+                        .and_then(AgentState::from_label)?;
+                    Some(AgentStatus {
+                        pane_id,
+                        source: entry
+                            .get("source")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        state,
+                        detail: entry
+                            .get("detail")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        summary: entry
+                            .get("summary")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        since: entry.get("since").and_then(Value::as_u64).unwrap_or(0),
+                        sequence: 0,
+                        expires_at: entry.get("expires_at").and_then(Value::as_u64),
+                        updated_at: entry.get("updated_at").and_then(Value::as_u64).unwrap_or(0),
+                        detected: false,
+                        clear_on_focus: entry
+                            .get("clear_on_focus")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Clone, Debug)]
 struct AgentStatus {
     pane_id: u32,
@@ -361,6 +476,9 @@ struct AgentStatus {
     since: u64,
     sequence: u64,
     expires_at: Option<u64>,
+    /// When this status last changed, in unix seconds. Sidebars in other tabs
+    /// compare it to decide whose copy of a pane's status is the current one.
+    updated_at: u64,
     detected: bool,
     clear_on_focus: bool,
 }
@@ -473,6 +591,9 @@ impl ZellijPlugin for State {
             Event::ModeUpdate(mode_info) => {
                 self.mode = mode_info.mode;
                 self.session_name = mode_info.session_name.unwrap_or_default();
+                // A sidebar opened in a new tab starts empty; this is the first
+                // moment it knows which session's statuses to adopt.
+                self.hydrate_agent_statuses();
             }
             Event::TabUpdate(mut tabs) => {
                 self.note_permissions_granted();
@@ -550,6 +671,7 @@ impl ZellijPlugin for State {
             }
             Event::Timer(_) => {
                 set_timeout(1.0);
+                self.hydrate_agent_statuses();
                 if std::path::Path::new(DEBUG_TRIGGER_PATH).exists() {
                     let view = match self.view {
                         View::Horizontal => "horizontal",
@@ -574,6 +696,7 @@ impl ZellijPlugin for State {
                         status.expires_at = None;
                         status.clear_on_focus = false;
                         status.since = now;
+                        status.updated_at = now;
                     }
                 }
                 self.timer_ticks = self.timer_ticks.wrapping_add(1);
@@ -622,6 +745,7 @@ impl ZellijPlugin for State {
             }
             _ => {}
         }
+        self.persist_agent_statuses();
         true
     }
 
@@ -644,7 +768,9 @@ impl ZellijPlugin for State {
         let Some(event) = parse_agent_event(&payload) else {
             return false;
         };
-        self.handle_agent_event(event)
+        let changed = self.handle_agent_event(event);
+        self.persist_agent_statuses();
+        changed
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
@@ -1221,6 +1347,7 @@ impl State {
                 since,
                 sequence: self.agent_sequence,
                 expires_at: lifetime.map(|seconds| unix_seconds().saturating_add(seconds)),
+                updated_at: unix_seconds(),
                 detected: false,
                 clear_on_focus: event.event == "Stop",
             },
@@ -1508,6 +1635,7 @@ impl State {
                         since: unix_seconds(),
                         sequence: self.agent_sequence,
                         expires_at: None,
+                        updated_at: unix_seconds(),
                         detected: true,
                         clear_on_focus: false,
                     },
@@ -1591,6 +1719,83 @@ impl State {
         }
         self.permissions_granted = true;
         set_selectable(view_selectable(self.view));
+    }
+
+    /// The shared file is the handover point between sidebars: whoever sees an
+    /// event writes it, and an instance that starts later reads it instead of
+    /// waiting for every agent to speak again.
+    fn sync_path(&self) -> Option<String> {
+        agent_sync_path(&self.session_name)
+    }
+
+    fn persist_agent_statuses(&mut self) {
+        let Some(path) = self.sync_path() else {
+            return;
+        };
+        let payload = encode_agent_statuses(&self.agent_statuses);
+        if self.agent_sync_payload.as_deref() == Some(payload.as_str()) {
+            return;
+        }
+        // Written beside the target and renamed, so a sidebar reading at the
+        // same moment sees either the old file or the new one, never half of it.
+        let staging = format!("{}.{}.staging", path, self.plugin_id.unwrap_or(0));
+        if std::fs::write(&staging, &payload).is_ok() && std::fs::rename(&staging, &path).is_ok() {
+            self.agent_sync_payload = Some(payload);
+        } else {
+            let _ = std::fs::remove_file(&staging);
+        }
+    }
+
+    fn hydrate_agent_statuses(&mut self) -> bool {
+        let Some(path) = self.sync_path() else {
+            return false;
+        };
+        let Ok(payload) = std::fs::read_to_string(&path) else {
+            return false;
+        };
+        if self.agent_sync_payload.as_deref() == Some(payload.as_str()) {
+            return false;
+        }
+        let incoming = decode_agent_statuses(&payload);
+        self.agent_sync_payload = Some(payload);
+        self.merge_agent_statuses(incoming)
+    }
+
+    fn merge_agent_statuses(&mut self, incoming: Vec<AgentStatus>) -> bool {
+        // A pane this instance knows nothing about is not resurrected: the
+        // manifest, not the file, decides which panes still exist.
+        let live: HashSet<u32> = self
+            .panes
+            .panes
+            .values()
+            .flatten()
+            .filter(|pane| !pane.is_plugin)
+            .map(|pane| pane.id)
+            .collect();
+        let mut changed = false;
+        for mut status in incoming {
+            if !live.is_empty() && !live.contains(&status.pane_id) {
+                continue;
+            }
+            if self
+                .session_end_timestamp_by_pane
+                .contains_key(&status.pane_id)
+            {
+                continue;
+            }
+            let stale = self
+                .agent_statuses
+                .get(&status.pane_id)
+                .is_some_and(|known| !known.detected && known.updated_at >= status.updated_at);
+            if stale {
+                continue;
+            }
+            self.agent_sequence = self.agent_sequence.wrapping_add(1);
+            status.sequence = self.agent_sequence;
+            self.agent_statuses.insert(status.pane_id, status);
+            changed = true;
+        }
+        changed
     }
 
     fn refresh_cwds(&mut self) {
@@ -2805,6 +3010,98 @@ mod tests {
             tool_detail("claude-code", Some("exec".to_string())).as_deref(),
             Some("exec"),
             "only choco-pi has a code mode"
+        );
+    }
+
+    #[test]
+    fn a_new_sidebar_adopts_the_statuses_its_siblings_already_have() {
+        let mut first = State::default();
+        assert!(first.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "PreToolUse".to_string(),
+            tool: Some("exec".to_string()),
+            summary: Some("fix the sidebar".to_string()),
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+
+        // A sidebar loaded into a new tab starts empty and reads the shared file.
+        let mut second = State::default();
+        second.panes.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                ..PaneInfo::default()
+            }],
+        );
+        let payload = encode_agent_statuses(&first.agent_statuses);
+        assert!(second.merge_agent_statuses(decode_agent_statuses(&payload)));
+
+        let status = second.agent_statuses.get(&7).expect("the agent is adopted");
+        assert_eq!(status.state, AgentState::Working);
+        assert_eq!(status.detail.as_deref(), Some("code mode"));
+        assert_eq!(status.summary.as_deref(), Some("fix the sidebar"));
+        assert_eq!(second.agent_entries().len(), 1);
+    }
+
+    #[test]
+    fn a_sidebar_keeps_its_own_newer_status_and_skips_departed_panes() {
+        let mut state = State::default();
+        state.panes.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                ..PaneInfo::default()
+            }],
+        );
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "PermissionRequest".to_string(),
+            tool: Some("Bash".to_string()),
+            summary: None,
+            pane_id: 7,
+            timestamp: Some(2),
+        }));
+        let known = state.agent_statuses[&7].updated_at;
+
+        let stale = vec![
+            AgentStatus {
+                pane_id: 7,
+                source: "choco-pi".to_string(),
+                state: AgentState::Idle,
+                detail: None,
+                summary: None,
+                since: 0,
+                sequence: 0,
+                expires_at: None,
+                updated_at: known.saturating_sub(1),
+                detected: false,
+                clear_on_focus: false,
+            },
+            AgentStatus {
+                pane_id: 42,
+                source: "claude-code".to_string(),
+                state: AgentState::Working,
+                detail: None,
+                summary: None,
+                since: 0,
+                sequence: 0,
+                expires_at: None,
+                updated_at: known + 10,
+                detected: false,
+                clear_on_focus: false,
+            },
+        ];
+        assert!(!state.merge_agent_statuses(stale));
+
+        assert_eq!(
+            state.agent_statuses[&7].state,
+            AgentState::Blocked,
+            "an older copy must not overwrite a newer one"
+        );
+        assert!(
+            !state.agent_statuses.contains_key(&42),
+            "a pane this session does not have is not resurrected"
         );
     }
 
