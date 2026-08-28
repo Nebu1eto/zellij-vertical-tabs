@@ -352,6 +352,25 @@ impl AgentState {
 /// back. This timeout only catches an agent that died without a closing hook.
 const AGENT_STALL_SECONDS: u64 = 900;
 
+/// A coding agent raises a notification for two opposite reasons: it needs
+/// approval to continue, or it has finished its turn and is waiting for the
+/// user. Only the first is a block; the second is simply done.
+fn notification_state(message: Option<&str>) -> (AgentState, Option<String>, Option<u64>) {
+    let text = message.unwrap_or_default().to_ascii_lowercase();
+    let needs_user = ["permission", "approve", "approval", "authoriz", "confirm"]
+        .iter()
+        .any(|needle| text.contains(needle));
+    if needs_user {
+        let detail = message
+            .filter(|message| !message.trim().is_empty())
+            .map(str::to_string)
+            .or_else(|| Some("notification".to_string()));
+        (AgentState::Blocked, detail, None)
+    } else {
+        (AgentState::Done, None, None)
+    }
+}
+
 /// choco-pi runs either a batch of calls inside one code-mode cell or a single
 /// tool directly, and the card should say which. Other agents keep their own
 /// tool names untouched.
@@ -1306,11 +1325,7 @@ impl State {
             ),
             "PostCompact" => (AgentState::Thinking, None, Some(AGENT_STALL_SECONDS)),
             "PermissionRequest" => (AgentState::Blocked, tool.clone(), None),
-            "Notification" => (
-                AgentState::Blocked,
-                Some("notification".to_string()),
-                Some(60),
-            ),
+            "Notification" => notification_state(event.tool.as_deref()),
             "SubagentStart" => (
                 AgentState::Working,
                 Some("subagent".to_string()),
@@ -2646,7 +2661,14 @@ mod tests {
             ("UserPromptSubmit", None, AgentState::Thinking, '●'),
             ("PreToolUse", Some("Bash"), AgentState::Working, '●'),
             ("PermissionRequest", Some("Bash"), AgentState::Blocked, '◉'),
-            ("Notification", None, AgentState::Blocked, '◉'),
+            (
+                "Notification",
+                Some("needs your permission to use Bash"),
+                AgentState::Blocked,
+                '◉',
+            ),
+            // A bare notification means the turn ended, not that it stalled.
+            ("Notification", None, AgentState::Done, '✓'),
             ("Stop", None, AgentState::Done, '✓'),
             ("StopFailure", None, AgentState::Failed, '✕'),
         ] {
@@ -2679,7 +2701,7 @@ mod tests {
         assert!(state.apply_agent_event(AgentEvent {
             source: "Claude Code".to_string(),
             event: "Notification".to_string(),
-            tool: None,
+            tool: Some("Claude needs your permission to use Edit".to_string()),
             summary: None,
             pane_id: 12,
             timestamp: Some(2),
@@ -2688,7 +2710,10 @@ mod tests {
 
         let segments = state.agent_status_segments(200);
         assert_eq!(segments.len(), 3);
-        assert_eq!(segments[0].0, "◉ Claude Code blocked · notification");
+        assert_eq!(
+            segments[0].0,
+            "◉ Claude Code blocked · Claude needs your permission to use Edit"
+        );
         assert_eq!(segments[0].1, state.colors.agent_urgent);
         assert_eq!(segments[1].0, " | ");
         assert_eq!(segments[2].0, "● Codex working · Bash");
@@ -3102,6 +3127,39 @@ mod tests {
         assert!(
             !state.agent_statuses.contains_key(&42),
             "a pane this session does not have is not resurrected"
+        );
+    }
+
+    #[test]
+    fn a_finished_agent_waiting_for_input_is_done_not_blocked() {
+        let mut state = State::default();
+        // Claude Code raises this once a turn ends and nobody has replied.
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "claude-code".to_string(),
+            event: "Notification".to_string(),
+            tool: Some("Claude is waiting for your input".to_string()),
+            summary: None,
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+        let status = &state.agent_statuses[&7];
+        assert_eq!(status.state, AgentState::Done);
+        assert!(!status.urgent(), "a finished turn must not read as urgent");
+
+        // The approval notification is the one that really blocks the agent.
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "claude-code".to_string(),
+            event: "Notification".to_string(),
+            tool: Some("Claude needs your permission to use Bash".to_string()),
+            summary: None,
+            pane_id: 7,
+            timestamp: Some(2),
+        }));
+        let status = &state.agent_statuses[&7];
+        assert_eq!(status.state, AgentState::Blocked);
+        assert_eq!(
+            status.detail.as_deref(),
+            Some("Claude needs your permission to use Bash")
         );
     }
 
