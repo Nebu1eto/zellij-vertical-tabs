@@ -1105,7 +1105,10 @@ impl State {
             bg: self.colors.background,
             bold: false,
         };
-        frame.put(0, 0, dim, &fit_line(" Tabs", content_cols));
+        // The section name is the row's heading; its totals stay quiet beside it.
+        let heading = Style { bold: true, ..dim };
+        frame.put(0, 0, dim, &fit_line("", content_cols));
+        frame.put(0, 0, heading, " Tabs");
         // The counts say how much of the session is off screen when the window
         // shows only part of it.
         let totals = tab_totals_label(
@@ -1187,8 +1190,12 @@ impl State {
         y += 1;
 
         let entries = self.agent_entries();
-        frame.put(0, y, dim, &fit_line(" Agents", content_cols));
-        let count = entries.len().to_string();
+        frame.put(0, y, dim, &fit_line("", content_cols));
+        frame.put(0, y, Style { bold: true, ..dim }, " Agents");
+        let count = agent_totals_label(
+            entries.len(),
+            content_cols.saturating_sub(cell_width(" Agents") + 2),
+        );
         frame.put(
             content_cols.saturating_sub(cell_width(&count) + 1),
             y,
@@ -2508,6 +2515,20 @@ fn tab_totals_label(tabs: usize, panes: usize, room: usize) -> String {
     format!("{tabs} · {panes}")
 }
 
+/// The agent count reads as sessions, matching the tab header's spelled-out
+/// totals, and falls back to the bare number when the sidebar is narrow.
+fn agent_totals_label(sessions: usize, room: usize) -> String {
+    let spelled = if sessions == 1 {
+        format!("{sessions} session")
+    } else {
+        format!("{sessions} sessions")
+    };
+    if cell_width(&spelled) <= room {
+        return spelled;
+    }
+    sessions.to_string()
+}
+
 fn vertical_styles(colors: &Colors, active: bool) -> (Style, Style) {
     if active {
         (colors.tab_active, colors.cwd_active)
@@ -2979,6 +3000,10 @@ mod tests {
         assert_eq!(tab_totals_label(1, 1, 24), "1 tab · 1 pane");
         // A narrow sidebar keeps the counts rather than a truncated word.
         assert_eq!(tab_totals_label(2, 3, 8), "2 · 3");
+
+        assert_eq!(agent_totals_label(3, 20), "3 sessions");
+        assert_eq!(agent_totals_label(1, 20), "1 session");
+        assert_eq!(agent_totals_label(3, 4), "3");
     }
 
     #[test]
@@ -3015,6 +3040,49 @@ mod tests {
 
         state.track_focused_pane();
         assert_eq!(state.focused_terminal_pane, Some(9));
+    }
+
+    #[test]
+    fn the_section_names_are_bold_and_their_totals_are_not() {
+        let mut state = State::default();
+        state.view = View::Vertical;
+        state.tabs = vec![TabInfo {
+            position: 0,
+            active: true,
+            ..TabInfo::default()
+        }];
+        state.panes.panes.insert(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                ..PaneInfo::default()
+            }],
+        );
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "PreToolUse".to_string(),
+            tool: Some("exec".to_string()),
+            summary: None,
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+
+        let colors = Colors::default();
+        let mut frame = AnsiFrame::new(12, 30, &colors);
+        state.render_vertical(&mut frame, 12, 30);
+        let output = frame.finish();
+
+        let weight_before = |needle: &str| {
+            let at = output.find(needle).expect("the section is rendered");
+            let style_at = output[..at].rfind("\u{1b}[").expect("it carries a style");
+            output[style_at..at].to_string()
+        };
+        assert!(weight_before(" Tabs").starts_with("\u{1b}[1;"));
+        assert!(weight_before(" Agents").starts_with("\u{1b}[1;"));
+        assert!(
+            weight_before("1 tab · 1 pane").starts_with("\u{1b}[22;"),
+            "the totals stay unbolded"
+        );
     }
 
     #[test]
