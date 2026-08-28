@@ -238,7 +238,8 @@ struct State {
     git_context: Option<GitContext>,
     git_refresh_pending: bool,
     permissions_granted: bool,
-    agent_status: Option<AgentStatus>,
+    agent_statuses: HashMap<u32, AgentStatus>,
+    agent_sequence: u64,
     timer_ticks: u8,
     git_refresh_interval: u8,
     timezone_offset_hours: i32,
@@ -277,8 +278,10 @@ struct GitContext {
 #[derive(Clone, Debug)]
 struct AgentStatus {
     pane_id: u32,
+    marker: char,
     message: String,
     urgent: bool,
+    sequence: u64,
     expires_at: Option<u64>,
 }
 
@@ -416,14 +419,9 @@ impl ZellijPlugin for State {
             }
             Event::Timer(_) => {
                 set_timeout(1.0);
-                if self
-                    .agent_status
-                    .as_ref()
-                    .and_then(|status| status.expires_at)
-                    .is_some_and(|expires_at| expires_at <= unix_seconds())
-                {
-                    self.agent_status = None;
-                }
+                let now = unix_seconds();
+                self.agent_statuses
+                    .retain(|_, status| status.expires_at.is_none_or(|expires_at| expires_at > now));
                 self.timer_ticks = self.timer_ticks.wrapping_add(1);
                 if self.timer_ticks >= self.git_refresh_interval {
                     self.timer_ticks = 0;
@@ -608,7 +606,7 @@ impl State {
         let (context, clock) = self.right_content();
         let (center_context, right_context, right_clock) = horizontal_content_split(
             self.show_tabs,
-            self.agent_status.is_some(),
+            !self.agent_statuses.is_empty(),
             &context,
             &clock,
         );
@@ -651,8 +649,9 @@ impl State {
         let center_end = cols.saturating_sub(right_width.saturating_add(1));
         if center_end > center_start {
             let available = center_end - center_start;
-            if let Some(status) = &self.agent_status {
-                let rendered = fit_line(&status.message, available);
+            if let Some(status) = self.primary_agent_status() {
+                let message = self.located_agent_message(status);
+                let rendered = fit_line(&message, available);
                 let width = cell_width(rendered.trim_end());
                 let x = center_start + available.saturating_sub(width) / 2;
                 let style = if status.urgent {
@@ -748,9 +747,14 @@ impl State {
         for (visible_index, tab) in self.tabs[range].iter().enumerate() {
             self.visible_vertical_tabs.push(tab.position);
             let marker = if tab.active { "▸" } else { " " };
+            let badge = self.agent_badge_for_tab(tab.position);
+            let badge_width = badge
+                .as_ref()
+                .map_or(0, |(text, _)| cell_width(text))
+                .min(content_cols);
             let title = fit_line(
                 &format!(" {marker} {}  {}", tab.position + 1, tab_name(tab)),
-                content_cols,
+                content_cols.saturating_sub(badge_width),
             );
             let cwd = self
                 .cwd_by_tab
@@ -761,6 +765,15 @@ impl State {
             let y = visible_index * 2;
             let (title_style, cwd_style) = vertical_styles(&self.colors, tab.active);
             frame.put(0, y, title_style, &title);
+            if let Some((text, urgent)) = badge {
+                let style = if urgent {
+                    self.colors.agent_urgent
+                } else {
+                    self.colors.agent
+                };
+                let text = fit_line(&text, badge_width);
+                frame.put(content_cols - badge_width, y, style, text.trim_end());
+            }
             frame.put(0, y + 1, cwd_style, &cwd);
         }
     }
@@ -771,62 +784,133 @@ impl State {
             .as_deref()
             .map(|tool| format!(" · {tool}"))
             .unwrap_or_default();
-        let (message, urgent, lifetime) = match event.event.as_str() {
-            "SessionStart" => (format!("◆ {} connected", event.source), false, Some(5)),
-            "UserPromptSubmit" => (format!("… {} thinking", event.source), false, Some(60)),
-            "PreToolUse" => (format!("… {} working{tool}", event.source), false, Some(60)),
-            "PostToolUse" => (format!("… {} working", event.source), false, Some(30)),
+        let (marker, message, urgent, lifetime) = match event.event.as_str() {
+            "SessionStart" => ('◆', format!("◆ {} connected", event.source), false, Some(5)),
+            "UserPromptSubmit" => (
+                '…',
+                format!("… {} thinking", event.source),
+                false,
+                Some(60),
+            ),
+            "PreToolUse" => (
+                '…',
+                format!("… {} working{tool}", event.source),
+                false,
+                Some(60),
+            ),
+            "PostToolUse" => ('…', format!("… {} working", event.source), false, Some(30)),
             "PostToolUseFailure" => (
+                '✕',
                 format!("✕ {} tool failed{tool}", event.source),
                 true,
                 Some(12),
             ),
             "PermissionRequest" => (
+                '⚠',
                 format!("⚠ {} permission required{tool}", event.source),
                 true,
                 Some(30),
             ),
-            "Notification" => (format!("● {} notification", event.source), true, Some(12)),
+            "Notification" => (
+                '●',
+                format!("● {} notification", event.source),
+                true,
+                Some(12),
+            ),
             "SubagentStart" => (
+                '◇',
                 format!("◇ {} subagent started", event.source),
                 false,
                 Some(12),
             ),
             "SubagentStop" => (
+                '◇',
                 format!("◇ {} subagent complete", event.source),
                 false,
                 Some(8),
             ),
             "Stop" => (
+                '✓',
                 format!("✓ {} response complete", event.source),
                 false,
                 Some(8),
             ),
             "StopFailure" => (
+                '✕',
                 format!("✕ {} response failed", event.source),
                 true,
                 Some(12),
             ),
-            "SessionEnd" => {
-                if self
-                    .agent_status
-                    .as_ref()
-                    .is_some_and(|status| status.pane_id == event.pane_id)
-                {
-                    self.agent_status = None;
-                    return true;
-                }
-                return false;
-            }
+            "SessionEnd" => return self.agent_statuses.remove(&event.pane_id).is_some(),
             _ => return false,
         };
-        self.agent_status = Some(AgentStatus {
-            pane_id: event.pane_id,
-            message,
-            urgent,
-            expires_at: lifetime.map(|seconds| unix_seconds().saturating_add(seconds)),
-        });
+        self.agent_sequence = self.agent_sequence.wrapping_add(1);
+        self.agent_statuses.insert(
+            event.pane_id,
+            AgentStatus {
+                pane_id: event.pane_id,
+                marker,
+                message,
+                urgent,
+                sequence: self.agent_sequence,
+                expires_at: lifetime.map(|seconds| unix_seconds().saturating_add(seconds)),
+            },
+        );
         true
+    }
+
+    fn primary_agent_status(&self) -> Option<&AgentStatus> {
+        self.agent_statuses
+            .values()
+            .max_by_key(|status| (status.urgent, status.sequence))
+    }
+
+    fn located_agent_message(&self, status: &AgentStatus) -> String {
+        let message = match self.pane_location(status.pane_id) {
+            Some((tab_position, pane_index)) => {
+                format!("[{}·{}] {}", tab_position + 1, pane_index + 1, status.message)
+            }
+            None => status.message.clone(),
+        };
+        let additional = self.agent_statuses.len().saturating_sub(1);
+        if additional > 0 {
+            format!("{message} +{additional}")
+        } else {
+            message
+        }
+    }
+
+    fn pane_location(&self, pane_id: u32) -> Option<(usize, usize)> {
+        for (tab_position, panes) in &self.panes.panes {
+            let index = panes
+                .iter()
+                .filter(|pane| !pane.is_plugin && !pane.is_suppressed && !pane.exited)
+                .position(|pane| pane.id == pane_id);
+            if let Some(index) = index {
+                return Some((*tab_position, index));
+            }
+        }
+        None
+    }
+
+    fn agent_badge_for_tab(&self, tab_position: usize) -> Option<(String, bool)> {
+        let panes = self.panes.panes.get(&tab_position)?;
+        let mut statuses: Vec<&AgentStatus> = panes
+            .iter()
+            .filter(|pane| !pane.is_plugin && !pane.is_suppressed)
+            .filter_map(|pane| self.agent_statuses.get(&pane.id))
+            .collect();
+        statuses.sort_by_key(|status| std::cmp::Reverse(status.sequence));
+        if statuses.is_empty() {
+            return None;
+        }
+        let urgent = statuses.iter().any(|status| status.urgent);
+        let markers = statuses
+            .iter()
+            .map(|status| status.marker.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some((format!(" {markers}"), urgent))
     }
 
     fn right_content(&self) -> (String, String) {
@@ -1540,7 +1624,7 @@ mod tests {
             pane_id: 7,
             timestamp: Some(9),
         }));
-        let status = state.agent_status.as_ref().unwrap();
+        let status = state.agent_statuses.get(&7).unwrap();
         assert!(status.urgent);
         assert_eq!(status.message, "✕ Codex response failed");
 
@@ -1551,7 +1635,89 @@ mod tests {
             pane_id: 7,
             timestamp: Some(10),
         }));
-        assert!(state.agent_status.is_none());
+        assert!(state.agent_statuses.is_empty());
+    }
+
+    #[test]
+    fn multiple_agent_sessions_are_tracked_per_pane() {
+        let mut state = State::default();
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "Codex".to_string(),
+            event: "PreToolUse".to_string(),
+            tool: Some("Bash".to_string()),
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "Claude Code".to_string(),
+            event: "Notification".to_string(),
+            tool: None,
+            pane_id: 12,
+            timestamp: Some(2),
+        }));
+        assert_eq!(state.agent_statuses.len(), 2);
+
+        let primary = state.primary_agent_status().unwrap();
+        assert!(primary.urgent, "urgent status takes center priority");
+        assert_eq!(primary.pane_id, 12);
+        assert!(state.located_agent_message(primary).ends_with(" +1"));
+
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "Claude Code".to_string(),
+            event: "SessionEnd".to_string(),
+            tool: None,
+            pane_id: 12,
+            timestamp: Some(3),
+        }));
+        assert_eq!(state.agent_statuses.len(), 1);
+        let primary = state.primary_agent_status().unwrap();
+        assert_eq!(primary.pane_id, 7);
+        assert!(!state.located_agent_message(primary).contains('+'));
+    }
+
+    #[test]
+    fn agent_badges_mark_each_tab_with_running_agents() {
+        let mut state = State::default();
+        for (tab_position, pane_id, event, timestamp) in [
+            (0, 7, "PreToolUse", 1),
+            (0, 8, "PermissionRequest", 2),
+            (1, 12, "Stop", 3),
+        ] {
+            state
+                .panes
+                .panes
+                .entry(tab_position)
+                .or_default()
+                .push(PaneInfo {
+                    id: pane_id,
+                    ..PaneInfo::default()
+                });
+            assert!(state.apply_agent_event(AgentEvent {
+                source: "Codex".to_string(),
+                event: event.to_string(),
+                tool: None,
+                pane_id,
+                timestamp: Some(timestamp),
+            }));
+        }
+
+        let (badge, urgent) = state.agent_badge_for_tab(0).unwrap();
+        assert!(urgent);
+        assert_eq!(badge, " ⚠ …", "newest marker leads the tab badge");
+
+        let (badge, urgent) = state.agent_badge_for_tab(1).unwrap();
+        assert!(!urgent);
+        assert_eq!(badge, " ✓");
+
+        assert!(state.agent_badge_for_tab(2).is_none());
+
+        assert_eq!(state.pane_location(8), Some((0, 1)));
+        assert_eq!(state.pane_location(99), None);
+        let primary = state.primary_agent_status().unwrap();
+        assert_eq!(
+            state.located_agent_message(primary),
+            "[1·2] ⚠ Codex permission required +2"
+        );
     }
 
     #[test]
@@ -1573,7 +1739,7 @@ mod tests {
             timestamp: Some(300),
         }));
         assert_eq!(state.last_hook_timestamp_by_pane.get(&7), Some(&300));
-        assert!(state.agent_status.is_none());
+        assert!(state.agent_statuses.is_empty());
 
         assert!(!state.handle_agent_event(AgentEvent {
             source: "Codex".to_string(),
@@ -1583,7 +1749,7 @@ mod tests {
             timestamp: Some(300),
         }));
         assert_eq!(state.last_hook_timestamp_by_pane.get(&7), Some(&300));
-        assert!(state.agent_status.is_none());
+        assert!(state.agent_statuses.is_empty());
 
         assert!(state.handle_agent_event(AgentEvent {
             source: "Codex".to_string(),
@@ -1593,7 +1759,7 @@ mod tests {
             timestamp: Some(300),
         }));
         assert_eq!(state.last_hook_timestamp_by_pane.get(&7), Some(&300));
-        assert_eq!(state.agent_status.as_ref().unwrap().pane_id, 7);
+        assert_eq!(state.agent_statuses.get(&7).unwrap().pane_id, 7);
 
         assert!(state.handle_agent_event(AgentEvent {
             source: "Codex".to_string(),

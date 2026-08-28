@@ -135,4 +135,6 @@ The payload fields used by the plugin are:
 
 Supported sources are `choco-pi`, `claude-code`, and `codex`. Supported status events include session, prompt, tool, permission, notification, subagent, completion, failure, and session-end lifecycle events.
 
+The plugin tracks every agent session independently per `pane_id`, so simultaneous agents in different tabs and panes each keep their own state. The horizontal center shows the most urgent (otherwise most recent) status prefixed with its `[tab·pane]` location, and appends `+N` when more agents are active. In the vertical view, each tab row is marked right-aligned with one status glyph (`…` working, `⚠` attention needed, `✓` done, `✕` failed, `◆` connected, `●` notification, `◇` subagent) per agent running in that tab; urgent markers use the urgent colors. Markers expire on their per-event lifetime or when the session ends.
+
 On first launch, grant the requested Zellij permissions. `ReadApplicationState` supplies tabs and working directories, `ChangeApplicationState` enables click-to-switch and notification focus, `RunCommands` supplies Git state, and `ReadCliPipes` receives coding-agent events.
