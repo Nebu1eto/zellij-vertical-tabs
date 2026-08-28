@@ -336,6 +336,21 @@ impl AgentState {
 /// back. This timeout only catches an agent that died without a closing hook.
 const AGENT_STALL_SECONDS: u64 = 900;
 
+/// choco-pi runs either a batch of calls inside one code-mode cell or a single
+/// tool directly, and the card should say which. Other agents keep their own
+/// tool names untouched.
+fn tool_detail(source: &str, tool: Option<String>) -> Option<String> {
+    let tool = tool?;
+    if !source.eq_ignore_ascii_case("choco-pi") {
+        return Some(tool);
+    }
+    match tool.as_str() {
+        "exec" => Some("code mode".to_string()),
+        "mcpScript" => Some("mcp code".to_string()),
+        other => Some(other.to_string()),
+    }
+}
+
 #[derive(Clone, Debug)]
 struct AgentStatus {
     pane_id: u32,
@@ -1149,33 +1164,22 @@ impl State {
     }
 
     fn apply_agent_event(&mut self, event: AgentEvent) -> bool {
+        let tool = tool_detail(&event.source, event.tool.clone());
         let (state, detail, lifetime) = match event.event.as_str() {
             "SessionStart" => (AgentState::Idle, None, None),
             "UserPromptSubmit" => (AgentState::Thinking, None, Some(AGENT_STALL_SECONDS)),
-            "PreToolUse" => (
-                AgentState::Working,
-                event.tool.clone(),
-                Some(AGENT_STALL_SECONDS),
-            ),
-            "PostToolUse" => (
-                AgentState::Working,
-                event.tool.clone(),
-                Some(AGENT_STALL_SECONDS),
-            ),
-            "PostToolUseFailure" => (
-                AgentState::Failed,
-                event.tool.clone(),
-                Some(AGENT_STALL_SECONDS),
-            ),
+            "PreToolUse" => (AgentState::Working, tool.clone(), Some(AGENT_STALL_SECONDS)),
+            "PostToolUse" => (AgentState::Working, tool.clone(), Some(AGENT_STALL_SECONDS)),
+            "PostToolUseFailure" => (AgentState::Failed, tool.clone(), Some(AGENT_STALL_SECONDS)),
             // Compaction blocks the agent's own turn, so it outlives an ordinary
             // tool call; `tool` carries the trigger (auto or manual) when sent.
             "PreCompact" => (
                 AgentState::Compacting,
-                event.tool.clone(),
+                tool.clone(),
                 Some(AGENT_STALL_SECONDS),
             ),
             "PostCompact" => (AgentState::Thinking, None, Some(AGENT_STALL_SECONDS)),
-            "PermissionRequest" => (AgentState::Blocked, event.tool.clone(), None),
+            "PermissionRequest" => (AgentState::Blocked, tool.clone(), None),
             "Notification" => (
                 AgentState::Blocked,
                 Some("notification".to_string()),
@@ -2783,6 +2787,24 @@ mod tests {
             state.agent_statuses[&7].state,
             AgentState::Thinking,
             "the timer must not report a working agent as idle"
+        );
+    }
+
+    #[test]
+    fn choco_pi_code_mode_reads_differently_from_a_single_tool_call() {
+        assert_eq!(
+            tool_detail("choco-pi", Some("exec".to_string())).as_deref(),
+            Some("code mode")
+        );
+        assert_eq!(
+            tool_detail("choco-pi", Some("read_text".to_string())).as_deref(),
+            Some("read_text"),
+            "a single tool call keeps its own name"
+        );
+        assert_eq!(
+            tool_detail("claude-code", Some("exec".to_string())).as_deref(),
+            Some("exec"),
+            "only choco-pi has a code mode"
         );
     }
 
