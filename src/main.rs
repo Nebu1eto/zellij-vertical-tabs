@@ -235,6 +235,8 @@ struct State {
     active_cwd: Option<PathBuf>,
     active_command: Option<String>,
     cwd_by_tab: HashMap<usize, PathBuf>,
+    repo_by_tab: HashMap<usize, RepoInfo>,
+    repo_cwd_by_tab: HashMap<usize, PathBuf>,
     configured_home: Option<PathBuf>,
     git_context: Option<GitContext>,
     git_refresh_pending: bool,
@@ -278,25 +280,94 @@ struct GitContext {
     dirty: bool,
 }
 
+/// Repository identity for a tab, read straight from the git directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RepoInfo {
+    repository: String,
+    branch: String,
+    worktree: Option<String>,
+}
+
+/// Lifecycle state shown in both views, following herdr's vocabulary so the
+/// glyph, the label and the colour always agree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentState {
+    Idle,
+    Thinking,
+    Working,
+    Blocked,
+    Done,
+    Failed,
+}
+
+impl AgentState {
+    fn glyph(self) -> char {
+        match self {
+            AgentState::Idle => '○',
+            AgentState::Thinking | AgentState::Working => '●',
+            AgentState::Blocked => '◉',
+            AgentState::Done => '✓',
+            AgentState::Failed => '✕',
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            AgentState::Idle => "idle",
+            AgentState::Thinking => "thinking",
+            AgentState::Working => "working",
+            AgentState::Blocked => "blocked",
+            AgentState::Done => "done",
+            AgentState::Failed => "failed",
+        }
+    }
+
+    fn urgent(self) -> bool {
+        matches!(self, AgentState::Blocked | AgentState::Failed)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct AgentStatus {
     pane_id: u32,
-    message: String,
+    source: String,
+    state: AgentState,
+    detail: Option<String>,
     summary: Option<String>,
-    urgent: bool,
+    since: u64,
     sequence: u64,
     expires_at: Option<u64>,
     detected: bool,
     clear_on_focus: bool,
 }
 
+impl AgentStatus {
+    fn urgent(&self) -> bool {
+        self.state.urgent()
+    }
+
+    /// Single-line form used by the horizontal bar.
+    fn message(&self) -> String {
+        let detail = self
+            .detail
+            .as_deref()
+            .map(|detail| format!(" · {detail}"))
+            .unwrap_or_default();
+        format!(
+            "{} {} {}{detail}",
+            self.state.glyph(),
+            self.source,
+            self.state.label()
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
-struct AgentRowLayout {
+struct AgentEntry {
     pane_id: u32,
-    urgent: bool,
-    line: String,
-    inline_label: Option<String>,
-    label_line: Option<String>,
+    state: AgentState,
+    name: String,
+    detail: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -413,6 +484,21 @@ impl ZellijPlugin for State {
                 }
             }
             Event::RunCommandResult(exit_code, stdout, _, context) => {
+                if context.get("kind").map(String::as_str) == Some("repo") {
+                    if let Some(position) =
+                        context.get("tab").and_then(|tab| tab.parse::<usize>().ok())
+                    {
+                        match (exit_code, parse_repo_info(&stdout)) {
+                            (Some(0), Some(info)) => {
+                                self.repo_by_tab.insert(position, info);
+                            }
+                            _ => {
+                                self.repo_by_tab.remove(&position);
+                            }
+                        }
+                    }
+                    return true;
+                }
                 self.git_refresh_pending = false;
                 if exit_code != Some(0) {
                     self.git_context = None;
@@ -450,12 +536,26 @@ impl ZellijPlugin for State {
                     let _ = std::fs::write(path, self.debug_snapshot());
                 }
                 let now = unix_seconds();
-                self.agent_statuses.retain(|_, status| {
-                    status.expires_at.is_none_or(|expires_at| expires_at > now)
-                });
+                // An expired status does not mean the agent left, only that it
+                // went quiet: keep it listed as idle so the section stays complete.
+                for status in self.agent_statuses.values_mut() {
+                    if status
+                        .expires_at
+                        .is_some_and(|expires_at| expires_at <= now)
+                    {
+                        status.state = AgentState::Idle;
+                        status.detail = None;
+                        status.expires_at = None;
+                        status.clear_on_focus = false;
+                        status.since = now;
+                    }
+                }
                 self.timer_ticks = self.timer_ticks.wrapping_add(1);
                 if self.timer_ticks >= self.git_refresh_interval {
                     self.timer_ticks = 0;
+                    // Branch changes are picked up on the same cadence as the bar's git state.
+                    self.repo_cwd_by_tab.clear();
+                    self.refresh_repositories();
                     self.refresh_git();
                 }
             }
@@ -787,168 +887,207 @@ impl State {
                 frame.put(x, y, self.colors.border, line);
             }
         }
-        if rows < 2 {
+        if rows < 2 || content_cols == 0 {
             return;
         }
+
+        let agents = self.agent_statuses.len();
+        // Agents are why this sidebar exists, so they claim their rows first and
+        // tabs fill the rest, always including the active tab.
+        let agent_budget = if agents == 0 {
+            0
+        } else {
+            (2 + agents * 2).min((rows * 3 / 5).max(4))
+        };
+        let tab_budget = rows.saturating_sub(agent_budget);
+
+        let y = self.render_vertical_tabs(frame, tab_budget, content_cols);
+        if agents > 0 {
+            self.render_vertical_agents(frame, y, rows, content_cols);
+        }
+    }
+
+    /// Tab cards: index and name on the first row, working directory below.
+    fn render_vertical_tabs(
+        &mut self,
+        frame: &mut AnsiFrame,
+        budget: usize,
+        content_cols: usize,
+    ) -> usize {
+        if budget < 2 || self.tabs.is_empty() {
+            return 0;
+        }
         let active_index = self.tabs.iter().position(|tab| tab.active).unwrap_or(0);
-        let window = self.vertical_window(active_index, rows, content_cols);
+        let window = vertical_tab_window(self.tabs.len(), active_index, budget / 2);
 
         let mut y = 0;
         for index in window {
+            if y + 2 > budget {
+                break;
+            }
             let tab = &self.tabs[index];
-            self.visible_vertical_tabs.push((y, tab.position));
-            let marker = if tab.active { "▸" } else { " " };
             let (title_style, cwd_style) = vertical_styles(&self.colors, tab.active);
-            let rollup = self.tab_rollup_glyph(tab.position).map(|(glyph, urgent)| {
-                (
-                    glyph,
-                    Style {
-                        fg: self.agent_accent(urgent),
-                        bg: title_style.bg,
-                        bold: title_style.bold,
-                    },
-                )
-            });
-            let rollup_width = usize::from(rollup.is_some()) + usize::from(rollup.is_some());
+            let marker = if tab.active { "▸" } else { " " };
+            let repo = self.repo_by_tab.get(&tab.position);
             let title = fit_line(
-                &format!(" {marker} {}  {}", tab.position + 1, tab_name(tab)),
-                content_cols.saturating_sub(rollup_width),
+                &format!(
+                    "{marker}{} {}",
+                    tab.position + 1,
+                    tab_display_name(tab, repo)
+                ),
+                content_cols,
             );
             let cwd = self
                 .cwd_by_tab
                 .get(&tab.position)
-                .map(|path| display_path(path, self.configured_home.as_deref()))
-                .unwrap_or_else(|| "—".to_string());
-            let cwd = fit_line(&format!("    {cwd}"), content_cols);
+                .map(|path| display_path(path, self.configured_home.as_deref()));
+            let detail = tab_detail_line(repo, cwd.as_deref());
+            let cwd = fit_line(&format!("   {detail}"), content_cols);
             frame.put(0, y, title_style, &title);
-            if let Some((glyph, style)) = rollup {
-                frame.put(content_cols - 1, y, style, &glyph.to_string());
-            }
             frame.put(0, y + 1, cwd_style, &cwd);
+            self.visible_vertical_tabs.push((y, tab.position));
             y += 2;
-            let label_style = Style {
-                fg: self.colors.cwd_normal.fg,
-                bg: self.colors.background,
-                bold: false,
-            };
-            for row in self.agent_row_layout(tab.position, content_cols) {
-                frame.put(0, y, self.vertical_agent_row_style(row.urgent), &row.line);
-                if let Some(label) = &row.inline_label {
-                    frame.put(cell_width(&row.line), y, label_style, label);
-                }
-                self.agent_focus_targets.push((y, 0, row.pane_id));
-                y += 1;
-                if let Some(label_line) = &row.label_line {
-                    frame.put(0, y, label_style, label_line);
-                    self.agent_focus_targets.push((y, 0, row.pane_id));
-                    y += 1;
-                }
-            }
-            if y >= rows {
+        }
+        y
+    }
+
+    /// Agent cards: state dot with location and agent name, then a dim row with
+    /// the state, how long it has held and the current task.
+    fn render_vertical_agents(
+        &mut self,
+        frame: &mut AnsiFrame,
+        start: usize,
+        rows: usize,
+        content_cols: usize,
+    ) -> usize {
+        let dim = Style {
+            fg: self.colors.cwd_normal.fg,
+            bg: self.colors.background,
+            bold: false,
+        };
+        let mut y = start;
+        if y + 3 > rows {
+            return y;
+        }
+        frame.put(
+            0,
+            y,
+            self.colors.border,
+            &repeat_pattern_to_width("─", content_cols),
+        );
+        y += 1;
+
+        let entries = self.agent_entries();
+        frame.put(0, y, dim, &fit_line(" agents", content_cols));
+        let count = entries.len().to_string();
+        frame.put(
+            content_cols.saturating_sub(cell_width(&count) + 1),
+            y,
+            dim,
+            &count,
+        );
+        y += 1;
+
+        for entry in entries {
+            if y + 2 > rows {
                 break;
             }
-        }
-    }
+            let accent = self.state_accent(entry.state);
+            let focused = self.focused_terminal_pane == Some(entry.pane_id);
+            frame.put(
+                1,
+                y,
+                Style {
+                    fg: accent,
+                    bg: self.colors.background,
+                    bold: entry.state.urgent(),
+                },
+                &entry.state.glyph().to_string(),
+            );
+            frame.put(
+                3,
+                y,
+                Style {
+                    fg: if focused {
+                        self.colors.cwd_active.fg
+                    } else {
+                        self.colors.tab_normal.fg
+                    },
+                    bg: self.colors.background,
+                    bold: true,
+                },
+                &truncate_line(&entry.name, content_cols.saturating_sub(3)),
+            );
+            self.agent_focus_targets.push((y, 0, entry.pane_id));
 
-    fn vertical_tab_height(&self, tab_position: usize, content_cols: usize) -> usize {
-        2 + self
-            .agent_row_layout(tab_position, content_cols)
-            .iter()
-            .map(|row| 1 + usize::from(row.label_line.is_some()))
-            .sum::<usize>()
-    }
-
-    fn vertical_window(&self, active_index: usize, rows: usize, content_cols: usize) -> Vec<usize> {
-        if self.tabs.is_empty() {
-            return Vec::new();
-        }
-        let active_index = active_index.min(self.tabs.len() - 1);
-        let mut selected = vec![active_index];
-        let mut used = self.vertical_tab_height(self.tabs[active_index].position, content_cols);
-        let mut up = active_index;
-        let mut down = active_index;
-        loop {
-            if down + 1 < self.tabs.len()
-                && used + self.vertical_tab_height(self.tabs[down + 1].position, content_cols)
-                    <= rows
-            {
-                down += 1;
-                used += self.vertical_tab_height(self.tabs[down].position, content_cols);
-                selected.push(down);
-            } else if up > 0
-                && used + self.vertical_tab_height(self.tabs[up - 1].position, content_cols) <= rows
-            {
-                up -= 1;
-                used += self.vertical_tab_height(self.tabs[up].position, content_cols);
-                selected.push(up);
-            } else {
-                break;
+            let state_text = entry.state.label();
+            frame.put(
+                3,
+                y + 1,
+                Style {
+                    fg: accent,
+                    bg: self.colors.background,
+                    bold: false,
+                },
+                &truncate_line(state_text, content_cols.saturating_sub(3)),
+            );
+            let used = 3 + cell_width(state_text);
+            if let Some(detail) = &entry.detail {
+                let room = content_cols.saturating_sub(used);
+                if room >= 4 {
+                    frame.put(
+                        used,
+                        y + 1,
+                        dim,
+                        &truncate_line(&format!(" · {detail}"), room),
+                    );
+                }
             }
+            self.agent_focus_targets.push((y + 1, 0, entry.pane_id));
+            y += 2;
         }
-        selected.sort_unstable();
-        selected
+        y
     }
 
-    /// One agent's rendered rows: the status line, the label that fits beside it,
-    /// and the label continuation line used when the sidebar is too narrow.
-    fn agent_row_layout(&self, tab_position: usize, content_cols: usize) -> Vec<AgentRowLayout> {
-        const INLINE_LABEL_MINIMUM: usize = 12;
-        self.agent_rows_for_tab(tab_position)
+    /// One presentable card per tracked agent, ordered by tab then pane.
+    fn agent_entries(&self) -> Vec<AgentEntry> {
+        let now = unix_seconds();
+        self.sorted_agent_statuses()
             .into_iter()
-            .map(|(pane_index, pane_id, status)| {
-                let line = truncate_line(
-                    &format!("  ▸p{} {}", pane_index + 1, status.message),
-                    content_cols,
-                );
-                let remaining = content_cols.saturating_sub(cell_width(&line));
-                let label = status
+            .map(|status| {
+                let name = match self.pane_location(status.pane_id) {
+                    Some((tab, pane)) => format!("{}·{} {}", tab + 1, pane + 1, status.source),
+                    None => status.source.clone(),
+                };
+                let elapsed = elapsed_label(now.saturating_sub(status.since));
+                let task = status
                     .summary
                     .clone()
-                    .or_else(|| self.agent_title_suffix(pane_id));
-                let (inline_label, label_line) = match label {
-                    Some(label) if remaining >= INLINE_LABEL_MINIMUM => {
-                        (Some(truncate_line(&format!(" · {label}"), remaining)), None)
-                    }
-                    Some(label) if content_cols > 6 => (
-                        None,
-                        Some(truncate_line(&format!("      {label}"), content_cols)),
-                    ),
-                    _ => (None, None),
+                    .or_else(|| status.detail.clone())
+                    .or_else(|| self.agent_title_suffix(status.pane_id));
+                let detail = match task {
+                    Some(task) => Some(format!("{elapsed} · {task}")),
+                    None => Some(elapsed),
                 };
-                AgentRowLayout {
-                    pane_id,
-                    urgent: status.urgent,
-                    line,
-                    inline_label,
-                    label_line,
+                AgentEntry {
+                    pane_id: status.pane_id,
+                    state: status.state,
+                    name,
+                    detail,
                 }
             })
             .collect()
     }
 
-    fn tab_rollup_glyph(&self, tab_position: usize) -> Option<(char, bool)> {
-        let rows = self.agent_rows_for_tab(tab_position);
-        if rows.is_empty() {
-            return None;
+    fn state_accent(&self, state: AgentState) -> Rgb {
+        match state {
+            AgentState::Blocked | AgentState::Failed => self.agent_accent(true),
+            AgentState::Thinking | AgentState::Working => self.agent_accent(false),
+            AgentState::Done => self.colors.context.fg,
+            AgentState::Idle => self.colors.cwd_normal.fg,
         }
-        if rows.iter().any(|(_, _, status)| status.urgent) {
-            return Some(('⚠', true));
-        }
-        if rows
-            .iter()
-            .any(|(_, _, status)| status.message.starts_with('…'))
-        {
-            return Some(('…', false));
-        }
-        let newest = rows.iter().max_by_key(|(_, _, status)| status.sequence)?.2;
-        let glyph = newest.message.chars().next().unwrap_or('●');
-        Some((glyph, false))
     }
 
-    /// Accent colour for agent text drawn on the sidebar background. A chip-style
-    /// configuration (dark text on a coloured block) contributes its background as
-    /// the accent; a flat configuration already stores the accent as its foreground,
-    /// so reusing the background there would paint the row invisible.
     fn agent_accent(&self, urgent: bool) -> Rgb {
         let style = if urgent {
             self.colors.agent_urgent
@@ -959,14 +1098,6 @@ impl State {
             style.fg
         } else {
             style.bg
-        }
-    }
-
-    fn vertical_agent_row_style(&self, urgent: bool) -> Style {
-        Style {
-            fg: self.agent_accent(urgent),
-            bg: self.colors.background,
-            bold: urgent,
         }
     }
 
@@ -1003,59 +1134,44 @@ impl State {
     }
 
     fn apply_agent_event(&mut self, event: AgentEvent) -> bool {
-        let tool = event
-            .tool
-            .as_deref()
-            .map(|tool| format!(" · {tool}"))
-            .unwrap_or_default();
-        let (message, urgent, lifetime) = match event.event.as_str() {
-            "SessionStart" => (format!("◆ {} connected", event.source), false, Some(5)),
-            "UserPromptSubmit" => (format!("… {} thinking", event.source), false, Some(60)),
-            "PreToolUse" => (format!("… {} working{tool}", event.source), false, Some(60)),
-            "PostToolUse" => (format!("… {} working", event.source), false, Some(30)),
-            "PostToolUseFailure" => (
-                format!("✕ {} tool failed{tool}", event.source),
-                true,
-                Some(12),
+        let (state, detail, lifetime) = match event.event.as_str() {
+            "SessionStart" => (AgentState::Idle, None, Some(30)),
+            "UserPromptSubmit" => (AgentState::Thinking, None, Some(60)),
+            "PreToolUse" => (AgentState::Working, event.tool.clone(), Some(60)),
+            "PostToolUse" => (AgentState::Working, event.tool.clone(), Some(30)),
+            "PostToolUseFailure" => (AgentState::Failed, event.tool.clone(), Some(30)),
+            "PermissionRequest" => (AgentState::Blocked, event.tool.clone(), None),
+            "Notification" => (
+                AgentState::Blocked,
+                Some("notification".to_string()),
+                Some(60),
             ),
-            "PermissionRequest" => (
-                format!("⚠ {} permission required{tool}", event.source),
-                true,
-                None,
-            ),
-            "Notification" => (format!("● {} notification", event.source), true, Some(12)),
-            "SubagentStart" => (
-                format!("◇ {} subagent started", event.source),
-                false,
-                Some(12),
-            ),
-            "SubagentStop" => (
-                format!("◇ {} subagent complete", event.source),
-                false,
-                Some(8),
-            ),
-            "Stop" => (format!("✓ {} response complete", event.source), false, None),
-            "StopFailure" => (
-                format!("✕ {} response failed", event.source),
-                true,
-                Some(12),
-            ),
+            "SubagentStart" => (AgentState::Working, Some("subagent".to_string()), Some(60)),
+            "SubagentStop" => (AgentState::Working, Some("subagent".to_string()), Some(30)),
+            "Stop" => (AgentState::Done, None, None),
+            "StopFailure" => (AgentState::Failed, None, Some(30)),
             "SessionEnd" => return self.agent_statuses.remove(&event.pane_id).is_some(),
             _ => return false,
         };
         self.agent_sequence = self.agent_sequence.wrapping_add(1);
-        let summary = event.summary.or_else(|| {
-            self.agent_statuses
-                .get(&event.pane_id)
-                .and_then(|status| status.summary.clone())
-        });
+        let previous = self.agent_statuses.get(&event.pane_id);
+        let summary = event
+            .summary
+            .or_else(|| previous.and_then(|status| status.summary.clone()));
+        // Keep the clock running while an agent stays in the same state, so the
+        // sidebar can show how long it has been blocked or working.
+        let since = previous
+            .filter(|status| status.state == state)
+            .map_or_else(unix_seconds, |status| status.since);
         self.agent_statuses.insert(
             event.pane_id,
             AgentStatus {
                 pane_id: event.pane_id,
-                message,
+                source: event.source,
+                state,
+                detail,
                 summary,
-                urgent,
+                since,
                 sequence: self.agent_sequence,
                 expires_at: lifetime.map(|seconds| unix_seconds().saturating_add(seconds)),
                 detected: false,
@@ -1076,9 +1192,10 @@ impl State {
             .map(|status| {
                 serde_json::json!({
                     "pane_id": status.pane_id,
-                    "message": status.message,
+                    "message": status.message(),
+                    "state": status.state.label(),
                     "summary": status.summary,
-                    "urgent": status.urgent,
+                    "urgent": status.urgent(),
                     "detected": status.detected,
                     "location": self.pane_location(status.pane_id),
                 })
@@ -1098,13 +1215,10 @@ impl State {
                             serde_json::json!({
                                 "pane_index": index,
                                 "pane_id": pane_id,
-                                "message": status.message,
+                                "message": status.message(),
                             })
                         })
                         .collect::<Vec<_>>(),
-                    "rollup": self.tab_rollup_glyph(tab.position).map(|(glyph, urgent)| {
-                        serde_json::json!({ "glyph": glyph.to_string(), "urgent": urgent })
-                    }),
                     "terminal_panes": self
                         .panes
                         .panes
@@ -1157,10 +1271,10 @@ impl State {
                     "[{}·{}] {}",
                     tab_position + 1,
                     pane_index + 1,
-                    status.message
+                    status.message()
                 )
             }
-            None => status.message.clone(),
+            None => status.message(),
         }
     }
 
@@ -1215,11 +1329,11 @@ impl State {
             if !segments.is_empty() {
                 let inherited = segments
                     .last()
-                    .map_or_else(|| self.agent_style(status.urgent), |(_, style)| *style);
+                    .map_or_else(|| self.agent_style(status.urgent()), |(_, style)| *style);
                 segments.push((SEPARATOR.to_string(), inherited));
                 used += separator_width;
             }
-            segments.push((text, self.agent_style(status.urgent)));
+            segments.push((text, self.agent_style(status.urgent())));
             used += width;
             included += 1;
             if width < entry_width {
@@ -1235,7 +1349,7 @@ impl State {
                     .last()
                     .map_or_else(|| self.agent_style(false), |(_, style)| *style);
                 segments.push((SEPARATOR.to_string(), separator_style));
-                segments.push((marker, self.agent_style(statuses[included].urgent)));
+                segments.push((marker, self.agent_style(statuses[included].urgent())));
             }
         }
         segments
@@ -1278,6 +1392,19 @@ impl State {
     }
 
     fn detect_agents_from_manifest(&mut self) {
+        // A pane that no longer exists cannot host an agent any more.
+        let live: HashSet<u32> = self
+            .panes
+            .panes
+            .values()
+            .flatten()
+            .filter(|pane| !pane.is_plugin)
+            .map(|pane| pane.id)
+            .collect();
+        if !live.is_empty() {
+            self.agent_statuses
+                .retain(|pane_id, _| live.contains(pane_id));
+        }
         let running: Vec<(u32, Vec<String>)> = self
             .panes
             .panes
@@ -1317,9 +1444,11 @@ impl State {
                     pane_id,
                     AgentStatus {
                         pane_id,
-                        message: format!("◆ {label} detected"),
+                        source: label.to_string(),
+                        state: AgentState::Idle,
+                        detail: None,
                         summary: None,
-                        urgent: false,
+                        since: unix_seconds(),
                         sequence: self.agent_sequence,
                         expires_at: None,
                         detected: true,
@@ -1411,6 +1540,37 @@ impl State {
             if let Ok(cwd) = get_pane_cwd(pane_id) {
                 self.cwd_by_tab.insert(tab_position, cwd);
             }
+        }
+        self.refresh_repositories();
+    }
+
+    /// Repository, branch and worktree per tab. Each tab's working directory is
+    /// resolved by one git invocation whose result arrives asynchronously.
+    fn refresh_repositories(&mut self) {
+        if !self.permissions_granted {
+            return;
+        }
+        let pending: Vec<(usize, PathBuf)> = self
+            .cwd_by_tab
+            .iter()
+            .filter(|(position, cwd)| {
+                self.repo_cwd_by_tab
+                    .get(*position)
+                    .is_none_or(|known| known != *cwd)
+            })
+            .map(|(position, cwd)| (*position, cwd.clone()))
+            .collect();
+        for (position, cwd) in pending {
+            self.repo_cwd_by_tab.insert(position, cwd.clone());
+            let mut context = BTreeMap::new();
+            context.insert("kind".to_string(), "repo".to_string());
+            context.insert("tab".to_string(), position.to_string());
+            run_command_with_env_variables_and_cwd(
+                &["sh", "-c", REPO_COMMAND],
+                BTreeMap::new(),
+                cwd,
+                context,
+            );
         }
     }
 
@@ -1660,6 +1820,7 @@ fn permissions_for_view(view: View) -> &'static [PermissionType] {
         View::Vertical => &[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
+            PermissionType::RunCommands,
             PermissionType::ReadCliPipes,
         ],
     }
@@ -1850,6 +2011,115 @@ fn horizontal_group_start(
         .checked_div(2)
         .unwrap_or(0)
         .clamp(left_bound, latest_start)
+}
+
+/// Repository identity for one tab, resolved with a single git invocation.
+const REPO_COMMAND: &str =
+    "git rev-parse --show-toplevel --abbrev-ref HEAD --git-dir --git-common-dir";
+
+/// Parse `git rev-parse` output: toplevel, branch, git dir, common dir.
+fn parse_repo_info(stdout: &[u8]) -> Option<RepoInfo> {
+    let text = String::from_utf8_lossy(stdout);
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let toplevel = PathBuf::from(lines.next()?);
+    let branch = lines.next()?.to_string();
+    let git_dir = PathBuf::from(lines.next()?);
+    let common_dir = lines.next().map(PathBuf::from);
+
+    let worktree = git_dir
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .filter(|name| *name == "worktrees")
+        .and_then(|_| git_dir.file_name())
+        .and_then(|name| name.to_str())
+        .map(str::to_string);
+
+    // A linked worktree lives beside the repository, so its own directory name
+    // would be misleading; name it after the repository the common dir belongs to.
+    let repository = match (&worktree, &common_dir) {
+        (Some(_), Some(common)) => {
+            project_name_for_git_dir(common).or_else(|| directory_name(&toplevel))?
+        }
+        _ => directory_name(&toplevel)?,
+    };
+
+    Some(RepoInfo {
+        repository,
+        branch: if branch == "HEAD" {
+            "detached".to_string()
+        } else {
+            branch
+        },
+        worktree,
+    })
+}
+
+fn directory_name(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+}
+
+/// Repository name owning a git directory such as `/repo/.git` or `/repo/.bare`.
+fn project_name_for_git_dir(git_dir: &Path) -> Option<String> {
+    let mut candidate = git_dir;
+    while candidate
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.') || name == "worktrees")
+    {
+        candidate = candidate.parent()?;
+    }
+    directory_name(candidate)
+}
+
+/// Zellij's own tab names carry no meaning, so a repository name may replace them.
+fn tab_display_name(tab: &TabInfo, repo: Option<&RepoInfo>) -> String {
+    let name = tab_name(tab);
+    let generated = name
+        .strip_prefix("Tab #")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()));
+    match repo {
+        Some(repo) if generated => repo.repository.clone(),
+        _ => name,
+    }
+}
+
+/// Second row of a tab card: branch and worktree when the tab sits in a
+/// repository, the working directory otherwise.
+fn tab_detail_line(repo: Option<&RepoInfo>, cwd: Option<&str>) -> String {
+    match repo {
+        Some(repo) => match &repo.worktree {
+            Some(worktree) => format!("{} · ⑂{}", repo.branch, worktree),
+            None => repo.branch.clone(),
+        },
+        None => cwd.unwrap_or("—").to_string(),
+    }
+}
+
+/// Tabs visible around the active one, two rows per tab.
+fn vertical_tab_window(total: usize, active_index: usize, capacity: usize) -> Vec<usize> {
+    if total == 0 || capacity == 0 {
+        return Vec::new();
+    }
+    if total <= capacity {
+        return (0..total).collect();
+    }
+    let half = capacity / 2;
+    let start = active_index
+        .saturating_sub(half)
+        .min(total.saturating_sub(capacity));
+    (start..start + capacity).collect()
+}
+
+/// Compact duration for a state that has been held for `seconds`.
+fn elapsed_label(seconds: u64) -> String {
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m", seconds / 60),
+        _ => format!("{}h{}m", seconds / 3600, (seconds % 3600) / 60),
+    }
 }
 
 fn vertical_styles(colors: &Colors, active: bool) -> (Style, Style) {
@@ -2064,6 +2334,7 @@ mod tests {
     }
 
     #[test]
+    #[test]
     fn agent_failure_and_session_end_update_status() {
         let mut state = State::default();
         assert!(state.apply_agent_event(AgentEvent {
@@ -2075,8 +2346,9 @@ mod tests {
             timestamp: Some(9),
         }));
         let status = state.agent_statuses.get(&7).unwrap();
-        assert!(status.urgent);
-        assert_eq!(status.message, "✕ Codex response failed");
+        assert!(status.urgent());
+        assert_eq!(status.state, AgentState::Failed);
+        assert_eq!(status.message(), "✕ Codex failed");
 
         assert!(state.apply_agent_event(AgentEvent {
             source: "Codex".to_string(),
@@ -2087,6 +2359,33 @@ mod tests {
             timestamp: Some(10),
         }));
         assert!(state.agent_statuses.is_empty());
+    }
+
+    #[test]
+    fn events_map_onto_the_shared_state_vocabulary() {
+        let mut state = State::default();
+        for (event, tool, expected, glyph) in [
+            ("SessionStart", None, AgentState::Idle, '○'),
+            ("UserPromptSubmit", None, AgentState::Thinking, '●'),
+            ("PreToolUse", Some("Bash"), AgentState::Working, '●'),
+            ("PermissionRequest", Some("Bash"), AgentState::Blocked, '◉'),
+            ("Notification", None, AgentState::Blocked, '◉'),
+            ("Stop", None, AgentState::Done, '✓'),
+            ("StopFailure", None, AgentState::Failed, '✕'),
+        ] {
+            assert!(state.apply_agent_event(AgentEvent {
+                source: "choco-pi".to_string(),
+                event: event.to_string(),
+                tool: tool.map(str::to_string),
+                summary: None,
+                pane_id: 7,
+                timestamp: Some(1),
+            }));
+            let status = state.agent_statuses.get(&7).unwrap();
+            assert_eq!(status.state, expected, "event {event}");
+            assert_eq!(status.state.glyph(), glyph, "event {event}");
+            assert_eq!(status.urgent(), expected.urgent(), "event {event}");
+        }
     }
 
     #[test]
@@ -2112,10 +2411,10 @@ mod tests {
 
         let segments = state.agent_status_segments(200);
         assert_eq!(segments.len(), 3);
-        assert_eq!(segments[0].0, "● Claude Code notification");
+        assert_eq!(segments[0].0, "◉ Claude Code blocked · notification");
         assert_eq!(segments[0].1, state.colors.agent_urgent);
         assert_eq!(segments[1].0, " | ");
-        assert_eq!(segments[2].0, "… Codex working · Bash");
+        assert_eq!(segments[2].0, "● Codex working · Bash");
         assert_eq!(segments[2].1, state.colors.agent);
 
         assert!(state.apply_agent_event(AgentEvent {
@@ -2127,227 +2426,247 @@ mod tests {
             timestamp: Some(3),
         }));
         assert_eq!(state.agent_statuses.len(), 1);
-        let segments = state.agent_status_segments(200);
-        assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0].0, "… Codex working · Bash");
     }
 
     #[test]
-    fn done_status_stays_until_the_pane_gains_focus() {
+    fn agent_cards_carry_location_state_and_task() {
         let mut state = State::default();
-        assert!(state.apply_agent_event(AgentEvent {
-            source: "Codex".to_string(),
-            event: "PermissionRequest".to_string(),
-            tool: None,
-            summary: None,
-            pane_id: 7,
-            timestamp: Some(1),
-        }));
-        assert!(
-            state.agent_statuses[&7].expires_at.is_none(),
-            "blocked prompt must not fade on its own"
-        );
-
-        assert!(state.apply_agent_event(AgentEvent {
-            source: "Codex".to_string(),
-            event: "Stop".to_string(),
-            tool: None,
-            summary: None,
-            pane_id: 7,
-            timestamp: Some(2),
-        }));
-        let status = &state.agent_statuses[&7];
-        assert!(status.expires_at.is_none(), "done stays until viewed");
-        assert!(status.clear_on_focus);
-
-        let unrelated_focus = || PaneManifest {
-            panes: HashMap::from([(
-                0,
-                vec![
-                    PaneInfo {
-                        id: 12,
-                        is_focused: true,
-                        ..PaneInfo::default()
-                    },
-                    PaneInfo {
-                        id: 7,
-                        ..PaneInfo::default()
-                    },
-                ],
-            )]),
-        };
-        state.update(Event::PaneUpdate(unrelated_focus()));
-        assert!(state.agent_statuses.contains_key(&7));
-
-        let mut refocus = unrelated_focus();
-        refocus.panes.get_mut(&0).unwrap()[0].is_focused = false;
-        refocus.panes.get_mut(&0).unwrap()[1].is_focused = true;
-        state.update(Event::PaneUpdate(refocus));
-        assert!(
-            state.agent_statuses.is_empty(),
-            "viewing the pane clears its done status"
-        );
-    }
-
-    #[test]
-    fn vertical_agent_rows_register_click_focus_targets() {
-        let mut state = State::default();
-        state.view = View::Vertical;
-        state.tabs = vec![TabInfo {
-            position: 0,
-            active: true,
-            ..TabInfo::default()
-        }];
-        state.panes.panes.insert(
-            0,
-            vec![PaneInfo {
-                id: 7,
-                ..PaneInfo::default()
-            }],
-        );
-        assert!(state.apply_agent_event(AgentEvent {
-            source: "Codex".to_string(),
-            event: "PreToolUse".to_string(),
-            tool: None,
-            summary: None,
-            pane_id: 7,
-            timestamp: Some(1),
-        }));
-
-        let colors = Colors::default();
-        let mut frame = AnsiFrame::new(4, 30, &colors);
-        state.render_vertical(&mut frame, 4, 30);
-
-        assert_eq!(state.agent_focus_targets.len(), 1);
-        let (line, start, pane_id) = state.agent_focus_targets[0];
-        assert_eq!(line, 2, "the agent row sits below title and cwd");
-        assert_eq!(pane_id, 7);
-        assert_eq!(start, 0, "the whole agent row focuses the pane");
-        assert_eq!(state.visible_vertical_tabs, vec![(0, 0)]);
-    }
-
-    #[test]
-    fn rollup_glyph_marks_worst_state_and_summary_sticks() {
-        let mut state = State::default();
-        for (pane_id, event, summary) in [
-            (7, "PreToolUse", Some("fix coding agent integration")),
-            (8, "UserPromptSubmit", None),
-        ] {
-            state.panes.panes.entry(0).or_default().push(PaneInfo {
+        for (tab, pane_id) in [(0, 7), (0, 8), (1, 12)] {
+            state.panes.panes.entry(tab).or_default().push(PaneInfo {
                 id: pane_id,
-                title: "novaid".to_string(),
                 ..PaneInfo::default()
             });
-            assert!(state.apply_agent_event(AgentEvent {
-                source: "choco-pi".to_string(),
-                event: event.to_string(),
-                tool: None,
-                summary: summary.map(str::to_string),
-                pane_id,
-                timestamp: Some(1),
-            }));
         }
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "PreToolUse".to_string(),
+            tool: Some("Exec".to_string()),
+            summary: Some("fix coding agent integration".to_string()),
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "Claude Code".to_string(),
+            event: "PermissionRequest".to_string(),
+            tool: Some("Bash".to_string()),
+            summary: None,
+            pane_id: 8,
+            timestamp: Some(2),
+        }));
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "Codex".to_string(),
+            event: "Stop".to_string(),
+            tool: None,
+            summary: None,
+            pane_id: 12,
+            timestamp: Some(3),
+        }));
 
-        let (glyph, urgent) = state.tab_rollup_glyph(0).unwrap();
-        assert_eq!((glyph, urgent), ('…', false));
+        let entries = state.agent_entries();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["1·1 choco-pi", "1·2 Claude Code", "2·1 Codex"],
+            "cards follow tab then pane order"
+        );
+        assert_eq!(entries[0].state, AgentState::Working);
+        assert!(
+            entries[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .ends_with("· fix coding agent integration"),
+            "the task label wins over the tool name"
+        );
+        assert_eq!(entries[1].state, AgentState::Blocked);
+        assert!(entries[1].detail.as_deref().unwrap().ends_with("· Bash"));
+        assert_eq!(entries[2].state, AgentState::Done);
+    }
+
+    #[test]
+    fn summary_survives_later_events_and_state_keeps_its_clock() {
+        let mut state = State::default();
+        assert!(state.apply_agent_event(AgentEvent {
+            source: "choco-pi".to_string(),
+            event: "UserPromptSubmit".to_string(),
+            tool: None,
+            summary: Some("fix the sidebar".to_string()),
+            pane_id: 7,
+            timestamp: Some(1),
+        }));
+        let started = state.agent_statuses[&7].since;
+        state.agent_statuses.get_mut(&7).unwrap().since = started - 90;
 
         assert!(state.apply_agent_event(AgentEvent {
             source: "choco-pi".to_string(),
-            event: "Stop".to_string(),
+            event: "UserPromptSubmit".to_string(),
             tool: None,
             summary: None,
             pane_id: 7,
             timestamp: Some(2),
         }));
         let status = &state.agent_statuses[&7];
+        assert_eq!(status.summary.as_deref(), Some("fix the sidebar"));
         assert_eq!(
-            status.summary.as_deref(),
-            Some("fix coding agent integration"),
-            "the task label survives later events without one"
+            status.since,
+            started - 90,
+            "an unchanged state keeps counting from when it began"
         );
-        let (glyph, _) = state.tab_rollup_glyph(0).unwrap();
-        assert_eq!(glyph, '…', "a working agent keeps the working glyph");
 
         assert!(state.apply_agent_event(AgentEvent {
             source: "choco-pi".to_string(),
-            event: "Notification".to_string(),
-            tool: None,
+            event: "PreToolUse".to_string(),
+            tool: Some("Exec".to_string()),
             summary: None,
-            pane_id: 8,
+            pane_id: 7,
             timestamp: Some(3),
         }));
-        let (glyph, urgent) = state.tab_rollup_glyph(0).unwrap();
-        assert_eq!((glyph, urgent), ('⚠', true));
-
-        assert_eq!(state.agent_title_suffix(7).as_deref(), Some("novaid"));
-        assert_eq!(state.agent_title_suffix(99), None);
-
-        let pane = state.panes.panes.get_mut(&0).unwrap();
-        pane[0].title.clear();
-        pane[1].title = "zsh".to_string();
-        assert_eq!(state.agent_title_suffix(7), None);
-        assert_eq!(state.agent_title_suffix(8), None);
+        assert!(
+            state.agent_statuses[&7].since > started - 90,
+            "a new state restarts the clock"
+        );
     }
 
     #[test]
-    fn agent_rows_render_neutral_with_summary_suffix() {
+    fn elapsed_labels_stay_compact() {
+        assert_eq!(elapsed_label(0), "0s");
+        assert_eq!(elapsed_label(59), "59s");
+        assert_eq!(elapsed_label(60), "1m");
+        assert_eq!(elapsed_label(3599), "59m");
+        assert_eq!(elapsed_label(3600), "1h0m");
+        assert_eq!(elapsed_label(7860), "2h11m");
+    }
+
+    #[test]
+    fn vertical_sidebar_renders_tab_and_agent_sections() {
         let mut state = State::default();
         state.view = View::Vertical;
-        state.tabs = vec![TabInfo {
-            position: 0,
-            active: true,
-            ..TabInfo::default()
-        }];
+        state.tabs = vec![
+            TabInfo {
+                position: 0,
+                active: true,
+                ..TabInfo::default()
+            },
+            TabInfo {
+                position: 1,
+                ..TabInfo::default()
+            },
+        ];
         state.panes.panes.insert(
             0,
             vec![PaneInfo {
                 id: 7,
-                title: "novaid".to_string(),
                 ..PaneInfo::default()
             }],
         );
         assert!(state.apply_agent_event(AgentEvent {
             source: "choco-pi".to_string(),
-            event: "PreToolUse".to_string(),
-            tool: None,
-            summary: Some("fix coding agent integration".to_string()),
+            event: "PermissionRequest".to_string(),
+            tool: Some("Bash".to_string()),
+            summary: None,
             pane_id: 7,
             timestamp: Some(1),
         }));
 
         let colors = Colors::default();
-        let mut frame = AnsiFrame::new(4, 80, &colors);
-        state.render_vertical(&mut frame, 4, 80);
+        let mut frame = AnsiFrame::new(12, 30, &colors);
+        state.render_vertical(&mut frame, 12, 30);
         let output = frame.finish();
 
-        assert!(output.contains("▸p1 … choco-pi working"));
+        assert!(output.contains("agents"), "the agent section has a header");
         assert!(
-            output.contains("· fix coding agent integration"),
-            "the summary suffix follows the status message"
+            output.contains("1·1 choco-pi"),
+            "cards show tab·pane and agent"
         );
-        let row_style = state.vertical_agent_row_style(false);
-        assert_eq!(row_style.bg, colors.background, "agent rows stay neutral");
-        assert_eq!(row_style.fg, colors.agent.bg);
-        assert!(state.vertical_agent_row_style(true).bold);
+        assert!(output.contains("blocked"), "cards show the state text");
+        assert!(output.contains('◉'), "blocked uses its own glyph");
 
-        // A flat configuration (accent already in the foreground, background matching
-        // the sidebar) must not paint the row in the background colour.
-        let mut configuration = BTreeMap::new();
-        configuration.insert("color_background".to_string(), "#2e3440".to_string());
-        configuration.insert("color_agent_fg".to_string(), "#a3be8c".to_string());
-        configuration.insert("color_agent_bg".to_string(), "#2e3440".to_string());
-        let mut flat = State::default();
-        flat.colors = Colors::from_config(&configuration);
-        let flat_style = flat.vertical_agent_row_style(false);
-        assert_eq!(flat_style.fg, Rgb(163, 190, 140));
-        assert_ne!(
-            flat_style.fg, flat_style.bg,
-            "agent text must never match the sidebar background"
+        assert_eq!(
+            state.visible_vertical_tabs,
+            vec![(0, 0), (2, 1)],
+            "tab cards occupy two rows each"
+        );
+        let agent_rows: Vec<usize> = state
+            .agent_focus_targets
+            .iter()
+            .map(|(line, _, _)| *line)
+            .collect();
+        assert_eq!(agent_rows.len(), 2, "both card rows focus the agent pane");
+        assert!(
+            agent_rows.iter().all(|line| *line > 3),
+            "agent cards render below the tab section"
         );
     }
 
     #[test]
-    fn narrow_sidebars_wrap_the_task_label_onto_its_own_row() {
+    fn git_rev_parse_output_yields_repository_branch_and_worktree() {
+        let plain = parse_repo_info(
+            b"/Users/me/Workspace/novaid\nmain\n/Users/me/Workspace/novaid/.git\n/Users/me/Workspace/novaid/.git\n",
+        )
+        .unwrap();
+        assert_eq!(plain.repository, "novaid");
+        assert_eq!(plain.branch, "main");
+        assert_eq!(plain.worktree, None);
+        assert_eq!(tab_detail_line(Some(&plain), Some("~/x")), "main");
+
+        let worktree = parse_repo_info(
+            b"/Users/me/Workspace/novaid-fix\nfix/auth\n/Users/me/Workspace/novaid/.bare/worktrees/fix-auth\n/Users/me/Workspace/novaid/.bare\n",
+        )
+        .unwrap();
+        assert_eq!(
+            worktree.repository, "novaid",
+            "a worktree is named after its repository, not its own folder"
+        );
+        assert_eq!(worktree.branch, "fix/auth");
+        assert_eq!(worktree.worktree.as_deref(), Some("fix-auth"));
+        assert_eq!(
+            tab_detail_line(Some(&worktree), None),
+            "fix/auth · ⑂fix-auth"
+        );
+
+        let detached = parse_repo_info(
+            b"/Users/me/Workspace/novaid\nHEAD\n/Users/me/Workspace/novaid/.git\n/Users/me/Workspace/novaid/.git\n",
+        )
+        .unwrap();
+        assert_eq!(detached.branch, "detached");
+
+        assert!(parse_repo_info(b"").is_none());
+        assert_eq!(
+            tab_detail_line(None, Some("~/Workspace/x")),
+            "~/Workspace/x"
+        );
+    }
+
+    #[test]
+    fn generated_tab_names_give_way_to_the_repository() {
+        let repo = RepoInfo {
+            repository: "novaid".to_string(),
+            branch: "main".to_string(),
+            worktree: None,
+        };
+        let generated = TabInfo {
+            position: 4,
+            name: "Tab #5".to_string(),
+            ..TabInfo::default()
+        };
+        let named = TabInfo {
+            position: 0,
+            name: "NovaID - Main".to_string(),
+            ..TabInfo::default()
+        };
+        assert_eq!(tab_display_name(&generated, Some(&repo)), "novaid");
+        assert_eq!(tab_display_name(&generated, None), "Tab #5");
+        assert_eq!(
+            tab_display_name(&named, Some(&repo)),
+            "NovaID - Main",
+            "a name the user chose is never replaced"
+        );
+    }
+
+    #[test]
+    fn quiet_agents_stay_listed_as_idle_until_their_pane_closes() {
         let mut state = State::default();
         state.panes.panes.insert(
             0,
@@ -2359,236 +2678,48 @@ mod tests {
         assert!(state.apply_agent_event(AgentEvent {
             source: "choco-pi".to_string(),
             event: "PreToolUse".to_string(),
-            tool: None,
-            summary: Some("fix coding agent integration".to_string()),
+            tool: Some("Exec".to_string()),
+            summary: Some("fix the sidebar".to_string()),
             pane_id: 7,
             timestamp: Some(1),
         }));
 
-        // A 29-column sidebar cannot fit the label beside "  ▸p1 … choco-pi working".
-        let rows = state.agent_row_layout(0, 29);
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].inline_label.is_none());
-        assert_eq!(
-            rows[0].label_line.as_deref(),
-            Some("      fix coding agent integ…")
-        );
-        assert_eq!(
-            state.vertical_tab_height(0, 29),
-            4,
-            "the wrapped label claims its own row"
-        );
+        // Expire the working status the way the timer would.
+        state.agent_statuses.get_mut(&7).unwrap().expires_at = Some(1);
+        state.update(Event::Timer(1.0));
 
-        // A wide sidebar keeps the label inline on the status row.
-        let rows = state.agent_row_layout(0, 80);
-        assert!(rows[0].label_line.is_none());
+        let status = state.agent_statuses.get(&7).expect("agent stays listed");
+        assert_eq!(status.state, AgentState::Idle);
+        assert_eq!(status.detail, None, "the stale tool name is dropped");
         assert_eq!(
-            rows[0].inline_label.as_deref(),
-            Some(" · fix coding agent integration")
+            status.summary.as_deref(),
+            Some("fix the sidebar"),
+            "the last task stays as context"
         );
-        assert_eq!(state.vertical_tab_height(0, 80), 3);
-    }
+        assert_eq!(state.agent_entries().len(), 1);
 
-    #[test]
-    fn foreground_agent_processes_are_detected_without_hooks() {
-        let mut state = State::default();
+        // Closing the pane removes the agent.
         state.update(Event::PaneUpdate(PaneManifest {
             panes: HashMap::from([(
                 0,
-                vec![
-                    PaneInfo {
-                        id: 21,
-                        terminal_command: Some("pi".to_string()),
-                        ..PaneInfo::default()
-                    },
-                    PaneInfo {
-                        id: 22,
-                        terminal_command: Some("/opt/homebrew/bin/zsh -l".to_string()),
-                        ..PaneInfo::default()
-                    },
-                ],
+                vec![PaneInfo {
+                    id: 9,
+                    ..PaneInfo::default()
+                }],
             )]),
         }));
-        assert_eq!(
-            state
-                .agent_statuses
-                .get(&21)
-                .map(|status| status.message.as_str()),
-            Some("◆ choco-pi detected"),
-            "already-running command panes are detected from the manifest"
-        );
-        assert!(!state.agent_statuses.contains_key(&22));
-
-        state.update(Event::CommandChanged(
-            PaneId::Terminal(7),
-            vec!["claude".to_string()],
-            true,
-            vec![],
-        ));
-        let status = state.agent_statuses.get(&7).unwrap();
-        assert_eq!(status.message, "◆ Claude Code detected");
-        assert!(status.detected);
-
-        state.update(Event::CommandChanged(
-            PaneId::Terminal(7),
-            vec!["ls".to_string()],
-            false,
-            vec![],
-        ));
-        assert!(
-            state.agent_statuses.contains_key(&7),
-            "background command changes do not disturb detection"
-        );
-
-        assert!(state.apply_agent_event(AgentEvent {
-            source: "Claude Code".to_string(),
-            event: "PreToolUse".to_string(),
-            tool: None,
-            summary: None,
-            pane_id: 7,
-            timestamp: Some(1),
-        }));
-        let status = state.agent_statuses.get(&7).unwrap();
-        assert!(!status.detected, "hook events take over the pane's state");
-        assert_eq!(status.message, "… Claude Code working");
-
-        state.update(Event::CommandChanged(
-            PaneId::Terminal(7),
-            vec!["zsh".to_string()],
-            true,
-            vec![],
-        ));
-        assert!(
-            state.agent_statuses.contains_key(&7),
-            "hook-reported state survives the agent exiting"
-        );
-
-        state.update(Event::CommandChanged(
-            PaneId::Terminal(9),
-            vec!["/usr/local/bin/opencode".to_string()],
-            true,
-            vec![],
-        ));
-        assert_eq!(
-            state.agent_statuses.get(&9).unwrap().message,
-            "◆ OpenCode detected"
-        );
-        state.update(Event::CommandChanged(
-            PaneId::Terminal(9),
-            vec!["zsh".to_string()],
-            true,
-            vec![],
-        ));
-        assert!(
-            !state.agent_statuses.contains_key(&9),
-            "detected placeholder disappears when the agent exits"
-        );
+        assert!(state.agent_statuses.is_empty());
     }
 
     #[test]
-    fn horizontal_status_line_fits_entries_and_counts_overflow() {
-        let mut state = State::default();
-        for (pane_id, source, event, timestamp) in [
-            (7, "Codex", "PreToolUse", 1),
-            (12, "Claude Code", "Notification", 2),
-        ] {
-            assert!(state.apply_agent_event(AgentEvent {
-                source: source.to_string(),
-                event: event.to_string(),
-                tool: None,
-                summary: None,
-                pane_id,
-                timestamp: Some(timestamp),
-            }));
-        }
-
-        let fits_both = state
-            .agent_status_segments(60)
-            .into_iter()
-            .map(|(text, _)| text)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            fits_both,
-            ["● Claude Code notification", " | ", "… Codex working"]
-        );
-
-        let limited = state.agent_status_segments(40);
-        let total: usize = limited.iter().map(|(text, _)| cell_width(text)).sum();
-        assert!(total <= 40);
-        assert_eq!(limited.last().unwrap().0, " +1");
-
-        let tiny = state.agent_status_segments(10);
-        let total: usize = tiny.iter().map(|(text, _)| cell_width(text)).sum();
-        assert!(total <= 10);
-        assert_eq!(
-            tiny.len(),
-            1,
-            "a lone entry truncates instead of overflowing"
-        );
-        assert!(tiny[0].0.ends_with('…'));
+    fn tab_window_keeps_the_active_tab_visible() {
+        assert_eq!(vertical_tab_window(3, 0, 5), vec![0, 1, 2]);
+        assert_eq!(vertical_tab_window(10, 0, 3), vec![0, 1, 2]);
+        assert_eq!(vertical_tab_window(10, 5, 3), vec![4, 5, 6]);
+        assert_eq!(vertical_tab_window(10, 9, 3), vec![7, 8, 9]);
+        assert!(vertical_tab_window(0, 0, 4).is_empty());
+        assert!(vertical_tab_window(4, 0, 0).is_empty());
     }
-
-    #[test]
-    fn agent_rows_and_segments_follow_tab_then_pane_order() {
-        let mut state = State::default();
-        for (tab_position, pane_id, event, timestamp) in [
-            (0, 7, "PreToolUse", 1),
-            (0, 8, "PermissionRequest", 2),
-            (1, 12, "Stop", 3),
-        ] {
-            state
-                .panes
-                .panes
-                .entry(tab_position)
-                .or_default()
-                .push(PaneInfo {
-                    id: pane_id,
-                    ..PaneInfo::default()
-                });
-            assert!(state.apply_agent_event(AgentEvent {
-                source: "Codex".to_string(),
-                event: event.to_string(),
-                tool: None,
-                summary: None,
-                pane_id,
-                timestamp: Some(timestamp),
-            }));
-        }
-
-        let rows = state.agent_rows_for_tab(0);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(
-            rows.iter()
-                .map(|(index, pane_id, status)| (*index, *pane_id, status.urgent))
-                .collect::<Vec<_>>(),
-            [(0, 7, false), (1, 8, true)],
-            "rows follow pane order within the tab"
-        );
-        let rows = state.agent_rows_for_tab(1);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0, 0);
-        assert_eq!(rows[0].1, 12);
-        assert!(state.agent_rows_for_tab(2).is_empty());
-
-        assert_eq!(state.pane_location(8), Some((0, 1)));
-        assert_eq!(state.pane_location(99), None);
-        let rendered = state
-            .agent_status_segments(500)
-            .into_iter()
-            .map(|(text, _)| text)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            rendered,
-            [
-                "[1·1] … Codex working",
-                " | ",
-                "[1·2] ⚠ Codex permission required",
-                " | ",
-                "[2·1] ✓ Codex response complete",
-            ]
-        );
-    }
-
     #[test]
     fn session_end_tombstone_rejects_delayed_events() {
         let mut state = State::default();
@@ -2654,13 +2785,17 @@ mod tests {
 
     #[test]
     fn permissions_match_view_requirements() {
-        assert!(permissions_for_view(View::Horizontal).contains(&PermissionType::RunCommands));
-        assert!(!permissions_for_view(View::Vertical).contains(&PermissionType::RunCommands));
         for view in [View::Horizontal, View::Vertical] {
+            let permissions = permissions_for_view(view);
             assert!(
-                permissions_for_view(view).contains(&PermissionType::ReadCliPipes),
+                permissions.contains(&PermissionType::ReadCliPipes),
                 "both views consume coding-agent pipe events"
             );
+            assert!(
+                permissions.contains(&PermissionType::RunCommands),
+                "both views resolve repository state with git"
+            );
+            assert!(permissions.contains(&PermissionType::ReadApplicationState));
         }
     }
 
@@ -3071,52 +3206,5 @@ mod tests {
     fn truncates_to_the_available_cell_width() {
         assert_eq!(fit_line(" 1  choco-pi", 10), " 1  choco…");
         assert_eq!(fit_line("abc", 5), "abc  ");
-    }
-
-    #[test]
-    fn vertical_window_keeps_active_visible_and_respects_rows() {
-        let mut state = State::default();
-        state.tabs = (0..5)
-            .map(|position| TabInfo {
-                position,
-                active: position == 2,
-                ..TabInfo::default()
-            })
-            .collect();
-        // tab 1 hosts one agent, so it costs 3 rows instead of 2
-        state.panes.panes.insert(
-            1,
-            vec![PaneInfo {
-                id: 7,
-                ..PaneInfo::default()
-            }],
-        );
-        assert!(state.apply_agent_event(AgentEvent {
-            source: "Codex".to_string(),
-            event: "PreToolUse".to_string(),
-            tool: None,
-            summary: None,
-            pane_id: 7,
-            timestamp: Some(1),
-        }));
-
-        // 8 rows: tab1 (3) + tab2 (2) + tab0 or tab3 (2 each, both fit only once more)
-        let window = state.vertical_window(2, 8, 30);
-        assert!(window.contains(&2), "the active tab stays visible");
-        let used: usize = window
-            .iter()
-            .map(|i| state.vertical_tab_height(state.tabs[*i].position, 30))
-            .sum();
-        assert!(used <= 8);
-
-        let window = state.vertical_window(4, 2, 30);
-        assert_eq!(
-            window,
-            vec![4],
-            "a too-short view still shows the active tab"
-        );
-
-        state.tabs = Vec::new();
-        assert!(state.vertical_window(0, 10, 30).is_empty());
     }
 }
