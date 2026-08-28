@@ -302,7 +302,6 @@ enum AgentState {
     Compacting,
     Blocked,
     Done,
-    Failed,
 }
 
 impl AgentState {
@@ -313,7 +312,6 @@ impl AgentState {
             AgentState::Compacting => '◍',
             AgentState::Blocked => '◉',
             AgentState::Done => '✓',
-            AgentState::Failed => '✕',
         }
     }
 
@@ -325,12 +323,11 @@ impl AgentState {
             AgentState::Compacting => "compacting",
             AgentState::Blocked => "blocked",
             AgentState::Done => "done",
-            AgentState::Failed => "failed",
         }
     }
 
     fn urgent(self) -> bool {
-        matches!(self, AgentState::Blocked | AgentState::Failed)
+        matches!(self, AgentState::Blocked)
     }
 
     fn from_label(label: &str) -> Option<Self> {
@@ -341,7 +338,6 @@ impl AgentState {
             "compacting" => Some(AgentState::Compacting),
             "blocked" => Some(AgentState::Blocked),
             "done" => Some(AgentState::Done),
-            "failed" => Some(AgentState::Failed),
             _ => None,
         }
     }
@@ -1378,7 +1374,7 @@ impl State {
 
     fn state_accent(&self, state: AgentState) -> Rgb {
         match state {
-            AgentState::Blocked | AgentState::Failed => self.agent_accent(true),
+            AgentState::Blocked => self.agent_accent(true),
             AgentState::Thinking | AgentState::Working | AgentState::Compacting => {
                 self.agent_accent(false)
             }
@@ -1439,7 +1435,7 @@ impl State {
             "UserPromptSubmit" => (AgentState::Thinking, None, Some(AGENT_STALL_SECONDS)),
             "PreToolUse" => (AgentState::Working, tool.clone(), Some(AGENT_STALL_SECONDS)),
             "PostToolUse" => (AgentState::Working, tool.clone(), Some(AGENT_STALL_SECONDS)),
-            "PostToolUseFailure" => (AgentState::Failed, tool.clone(), Some(AGENT_STALL_SECONDS)),
+            "PostToolUseFailure" => (AgentState::Working, tool.clone(), Some(AGENT_STALL_SECONDS)),
             // Compaction blocks the agent's own turn, so it outlives an ordinary
             // tool call; `tool` carries the trigger (auto or manual) when sent.
             "PreCompact" => (
@@ -1461,7 +1457,7 @@ impl State {
                 Some(AGENT_STALL_SECONDS),
             ),
             "Stop" => (AgentState::Done, None, None),
-            "StopFailure" => (AgentState::Failed, None, Some(AGENT_STALL_SECONDS)),
+            "StopFailure" => (AgentState::Idle, None, None),
             "SessionEnd" => return self.agent_statuses.remove(&event.pane_id).is_some(),
             _ => return false,
         };
@@ -2830,8 +2826,7 @@ mod tests {
     }
 
     #[test]
-    #[test]
-    fn agent_failure_and_session_end_update_status() {
+    fn a_failed_turn_leaves_the_agent_idle_rather_than_failed() {
         let mut state = State::default();
         assert!(state.apply_agent_event(AgentEvent {
             source: "Codex".to_string(),
@@ -2842,9 +2837,12 @@ mod tests {
             timestamp: Some(9),
         }));
         let status = state.agent_statuses.get(&7).unwrap();
-        assert!(status.urgent());
-        assert_eq!(status.state, AgentState::Failed);
-        assert_eq!(status.message(), "✕ Codex failed");
+        assert!(
+            !status.urgent(),
+            "only waiting on the user is worth an alarm"
+        );
+        assert_eq!(status.state, AgentState::Idle);
+        assert_eq!(status.message(), "○ Codex idle");
 
         assert!(state.apply_agent_event(AgentEvent {
             source: "Codex".to_string(),
@@ -2874,7 +2872,9 @@ mod tests {
             // A bare notification means the turn ended, not that it stalled.
             ("Notification", None, AgentState::Done, '✓'),
             ("Stop", None, AgentState::Done, '✓'),
-            ("StopFailure", None, AgentState::Failed, '✕'),
+            // Neither a failing tool call nor a failed turn is a state of its own.
+            ("PostToolUseFailure", Some("Bash"), AgentState::Working, '●'),
+            ("StopFailure", None, AgentState::Idle, '○'),
         ] {
             assert!(state.apply_agent_event(AgentEvent {
                 source: "choco-pi".to_string(),
