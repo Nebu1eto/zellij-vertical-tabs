@@ -1561,5 +1561,4 @@ impl State {
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
 mod tests;
