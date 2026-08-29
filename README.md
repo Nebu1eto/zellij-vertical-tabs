@@ -1,149 +1,131 @@
 # zellij-vertical-tabs
 
-A single Zellij plugin for status information, horizontal tabs, two-line vertical tabs, and coding-agent activity.
+English | [한국어](README.ko.md)
 
-The horizontal view provides the information used by zjstatus in this profile:
+A Zellij WebAssembly plugin with two views: a horizontal status bar and a vertical sidebar. It shows tabs, repository, branch, and linked-worktree state, a clock, and coding-agent status for choco-pi, Claude Code, Codex, and detected terminal agents.
 
-- mode and session
-- clickable horizontal tabs and bell indicators
-- repository, branch, dirty state, and active command
-- configurable UTC offset and clock
-- choco-pi, Claude Code, and Codex lifecycle status
+![Horizontal status bar with a vertical tabs and coding-agents sidebar](assets/demo.png)
 
-The top bar keeps mode/session information on the left and the complete clock on the right. By default, tabs are centered and repository/command context shares the right side. Set `show_tabs "false"` to center repository, branch, dirty state, and active command instead; coding-agent status always takes center priority. The context falls back to the current directory and command outside a repository and is not duplicated on the right when tabs are hidden.
+## Install
 
-The vertical view has two sections, each under a header. `Tabs` reports the session's totals on its right as `2 tabs · 3 panes`, shortened to bare counts when the sidebar is too narrow, and `Agents` counts the agents it tracks. Tab cards take two rows: index and name on the first, repository state on the second — the branch, plus `⑂worktree` when the tab sits in a linked worktree, falling back to the working directory outside a repository. A tab still called `Tab #N` shows its repository name instead; a name you chose is never replaced. Below a rule, the `Agents` section lists every tracked agent as a card: a state glyph with `tab·pane` and the agent name, then the state, how long it has held, and the current task. It keeps the active tab visible, supports click-to-switch behavior, and reserves its final column for a full-height separator by default.
-
-## Build
+Download one release artifact under two names. Zellij keys plugin instances by URL, so layouts that use both views must give each view a distinct URL or file path.
 
 ```sh
-rustup target add wasm32-wasip1
-cargo build --release --target wasm32-wasip1
+mkdir -p ~/.config/zellij/plugins
+curl -fL https://github.com/Nebu1eto/zellij-vertical-tabs/releases/latest/download/zellij-vertical-tabs.wasm \
+  -o ~/.config/zellij/plugins/vertical-tabs.wasm
+cp ~/.config/zellij/plugins/vertical-tabs.wasm \
+  ~/.config/zellij/plugins/vertical-sidebar.wasm
 ```
 
-The single artifact is:
+On first launch, focus each plugin pane and press `y` to grant the requested permissions.
+
+## Configure
+
+This layout loads the horizontal and vertical views from distinct paths. The percentage size sets the sidebar's initial width while keeping it resizable.
+
+```kdl
+layout {
+    pane size=2 borderless=true {
+        plugin location="file:~/.config/zellij/plugins/vertical-tabs.wasm" {
+            view "horizontal"
+            show_tabs "true"
+            timezone_offset_hours "9"
+        }
+    }
+    pane split_direction="vertical" {
+        pane
+        pane size="30%" borderless=true {
+            plugin location="file:~/.config/zellij/plugins/vertical-sidebar.wasm" {
+                view "vertical"
+                home "/Users/example"
+                vertical_separator_enabled "true"
+                vertical_separator_char "│"
+            }
+        }
+    }
+}
+```
+
+The main configuration keys are:
+
+| Key | Values or purpose |
+| --- | --- |
+| `view` | `"horizontal"` or `"vertical"` |
+| `show_tabs` | Show horizontal tabs; defaults to `"true"` |
+| `timezone_offset_hours` | Clock offset from UTC, in hours |
+| `home` | Home path used in displayed working directories |
+| `vertical_separator_enabled` | Show the sidebar separator; defaults to `"true"` |
+| `vertical_separator_char` | Sidebar separator; defaults to `"│"` |
+| `border_enabled` | Enable the horizontal-view border independently of the sidebar separator |
+| `border_char` | Horizontal-view border character |
+
+Colors accept `#RRGGBB` or `RRGGBB`. Invalid values use the built-in Nord defaults. Available keys are:
 
 ```text
-target/wasm32-wasip1/release/zellij-vertical-tabs.wasm
+color_background
+color_session_fg  color_session_bg
+color_mode_normal_fg  color_mode_normal_bg
+color_mode_locked_fg  color_mode_locked_bg
+color_mode_resize_fg  color_mode_resize_bg
+color_mode_pane_fg  color_mode_pane_bg
+color_mode_tab_fg  color_mode_tab_bg
+color_mode_search_fg  color_mode_search_bg
+color_mode_rename_tab_fg  color_mode_rename_tab_bg
+color_mode_rename_pane_fg  color_mode_rename_pane_bg
+color_mode_move_fg  color_mode_move_bg
+color_mode_default_fg  color_mode_default_bg
+color_tab_normal_fg  color_tab_normal_bg
+color_tab_active_fg  color_tab_active_bg
+color_cwd_normal_fg  color_cwd_normal_bg
+color_cwd_active_fg  color_cwd_active_bg
+color_context_fg  color_context_bg
+color_clock_fg  color_clock_bg
+color_border_fg  color_border_bg
+color_agent_fg  color_agent_bg
+color_agent_urgent_fg  color_agent_urgent_bg
 ```
 
-## Horizontal layout
+## Coding-agent status
 
-```kdl
-pane size=2 borderless=true {
-    plugin location="file:~/.config/zellij/plugins/vertical-tabs.wasm" {
-        view "horizontal"
-        show_tabs "true"
-        timezone_offset_hours "9"
-        color_background "#2E3440"
-        color_tab_active_fg "#2E3440"
-        color_tab_active_bg "#88C0D0"
-    }
-}
-```
-
-## Vertical layout
-
-```kdl
-pane size="30%" borderless=true {
-    plugin location="file:~/.config/zellij/plugins/vertical-sidebar.wasm" {
-        view "vertical"
-        home "/Users/example"
-        vertical_separator_enabled "true"
-        vertical_separator_char "│"
-        color_tab_active_bg "#88C0D0"
-        color_cwd_active_bg "#5E81AC"
-    }
-}
-```
-
-`show_tabs` defaults to `true`. `vertical_separator_enabled` defaults to `true`, and `vertical_separator_char` defaults to `│`. Disable the separator to make tab title and working-directory content use the full sidebar width. The horizontal `border_enabled` and `border_char` settings remain independent of the vertical separator.
-
-Use a percentage such as `size="30%"` to set the initial sidebar width while keeping it resizable. A numeric value such as `size=30` creates a fixed pane that Zellij cannot resize. Put the plugin pane before or after the terminal pane to place it on the left or right. After granting permissions, the vertical plugin pane remains nonselectable so normal close actions cannot target it. Keep the adjacent terminal focused and use the existing `Alt/Option+Shift+Left/Right` pane-resize bindings to adjust the split. The active sidebar's observed column count becomes the absolute target for every visible plugin whose URL ends in `/vertical-sidebar.wasm`. On each pane-state update, mismatched sidebars grow or shrink toward that target until every reported width is exactly equal; this does not replay the initiating resize delta. Convergence is abandoned after 64 state updates if a pane disappears or cannot reach the target. Once a tab has contained a terminal or non-UI plugin, the vertical sidebar closes that tab when only the layout's top bar, sidebar, and suppressed `zellij:link` helper remain. This synchronization assumes a single attached client because `PaneManifest` exposes pane focus without identifying which client initiated the resize. Both views are nonselectable UI panes, while tab clicks continue to switch tabs.
-
-When one layout loads horizontal and vertical views together, install the same build under two local paths: `vertical-tabs.wasm` for the horizontal bar and `vertical-sidebar.wasm` for the sidebar. Zellij keys running plugins by URL and can conflate two differently configured instances that use the same URL when a layout is added to an existing session. The dotfiles installer creates both files from the same build artifact.
-
-## Colors
-
-Colors use 24-bit ANSI and accept `#RRGGBB` (or `RRGGBB`) values. Invalid values fall back to the built-in Nord defaults. Every foreground/background pair can be configured independently:
-
-```kdl
-color_background "#2E3440"
-color_session_fg "#D8DEE9"
-color_session_bg "#3B4252"
-
-color_mode_normal_fg "#2E3440"
-color_mode_normal_bg "#A3BE8C"
-color_mode_locked_fg "#ECEFF4"
-color_mode_locked_bg "#BF616A"
-color_mode_resize_fg "#2E3440"
-color_mode_resize_bg "#EBCB8B"
-color_mode_pane_fg "#2E3440"
-color_mode_pane_bg "#88C0D0"
-color_mode_tab_fg "#2E3440"
-color_mode_tab_bg "#B48EAD"
-color_mode_search_fg "#2E3440"
-color_mode_search_bg "#EBCB8B"
-color_mode_rename_tab_fg "#2E3440"
-color_mode_rename_tab_bg "#D08770"
-color_mode_rename_pane_fg "#2E3440"
-color_mode_rename_pane_bg "#D08770"
-color_mode_move_fg "#2E3440"
-color_mode_move_bg "#B48EAD"
-color_mode_default_fg "#D8DEE9"
-color_mode_default_bg "#4C566A"
-
-color_tab_normal_fg "#D8DEE9"
-color_tab_normal_bg "#3B4252"
-color_tab_active_fg "#2E3440"
-color_tab_active_bg "#88C0D0"
-color_cwd_normal_fg "#81A1C1"
-color_cwd_normal_bg "#2E3440"
-color_cwd_active_fg "#ECEFF4"
-color_cwd_active_bg "#5E81AC"
-color_context_fg "#D8DEE9"
-color_context_bg "#3B4252"
-color_clock_fg "#2E3440"
-color_clock_bg "#88C0D0"
-color_border_fg "#4C566A"
-color_border_bg "#2E3440"
-color_agent_fg "#2E3440"
-color_agent_bg "#A3BE8C"
-color_agent_urgent_fg "#ECEFF4"
-color_agent_urgent_bg "#BF616A"
-```
-
-## Coding-agent events
-
-Send Claude-compatible lifecycle JSON to the plugin through a small hook bridge:
+The plugin detects supported terminal agent processes without hooks. Hooks add lifecycle and task details by sending JSON through the named pipe:
 
 ```sh
 zellij pipe --name coding-agent-status -- "$payload"
 ```
 
-The payload fields used by the plugin are:
+The JSON may identify the pane, event, tool, task summary, source agent, and timestamp. Hook events from choco-pi, Claude Code, and Codex update the matching pane's status.
 
-```json
-{
-  "pane_id": 7,
-  "hook_event": "PreToolUse",
-  "tool_name": "Bash",
-  "summary": "fix coding agent integration",
-  "source_agent": "codex",
-  "ts_ms": 1787833000000
-}
+## Build
+
+Install the WASI target and build the release artifact:
+
+```sh
+rustup target add wasm32-wasip1
+cargo build --release
 ```
 
-Supported sources are `choco-pi`, `claude-code`, and `codex`. Supported status events include session, prompt, tool, permission, notification, subagent, completion, failure, and session-end lifecycle events.
+The artifact is written to:
 
-The plugin tracks every agent session independently per `pane_id`, so simultaneous agents in different tabs and panes each keep their own state. Both views list agents in tab-then-pane order. The horizontal center shows as many statuses as fit on one line, each prefixed with its `[tab·pane]` location, and appends `+N` when more agents are active than fit. In the vertical view, each tab block (index/name plus working directory) gains one row per agent running in that tab — `p1`, `p2`, … with the full status message such as `⚠ Claude Code permission required · Bash`. Agent rows render neutral-tinted: the text carries the normal or urgent color instead of a solid bar. Each tab title row carries a right-aligned rollup glyph — `⚠` when any agent is blocked, `…` while any works, `✓` when all are done. Only waiting on you counts as blocked: a failing tool call stays part of the work, and a turn that ends badly leaves the agent idle — and agent rows append a dimmed task label from the pipe's `summary` field (kept across later events until a new one arrives) or fall back to the pane's terminal title when it looks like a task name. The focused pane's agent card carries the same `▸` marker as the active tab. Clicking an agent row focuses that agent's pane; clicking the tab rows switches tabs.
+```text
+target/wasm32-wasip1/release/zellij-vertical-tabs.wasm
+```
 
-Two states are sticky instead of expiring: a permission request stays until the agent moves on (its own next event replaces it), and a completed response (`✓`) stays until you focus that pane. Transient states still expire on their per-event lifetime, and a session-end event clears the pane's entry.
+## Release
 
-Agents that emit no hook events are still detected from their foreground process — `claude`, `codex`, `pi`/`choco-pi`, `opencode`, `gemini`, `cursor`, `aider`, `amp` appear as `◆ <agent> detected`. Hook events for the same pane take over with full lifecycle state, and the detected placeholder disappears when the process exits.
+Continuous integration checks formatting, Clippy, tests, and the release WASM build. To publish a release:
 
-On first launch, grant the requested Zellij permissions. `ReadApplicationState` supplies tabs and working directories, `ChangeApplicationState` enables click-to-switch and notification focus, `RunCommands` supplies Git state, and `ReadCliPipes` receives coding-agent events.
+1. Set `version` in `Cargo.toml` to `MAJOR.MINOR.PATCH`.
+2. Commit and push that change.
+3. Create and push the matching tag:
 
-Both views need `ReadCliPipes`; without it Zellij never delivers agent events to that pane and the view stays empty. Each pane stays focusable until its permissions are granted, because Zellij renders the permission prompt inside the pane and withholds every event — including timers — until the prompt is answered. Focus the pane and press `y`; the pane becomes nonselectable again once permission is granted. Changing the requested permission set re-prompts, and a plugin left waiting on a prompt keeps `zellij action start-or-reload-plugin` from reloading that plugin URL for the rest of the session.
+   ```sh
+   git tag vMAJOR.MINOR.PATCH
+   git push origin vMAJOR.MINOR.PATCH
+   ```
 
-For troubleshooting, create `.zellij-vtabs-debug` in the session's working directory. While that file exists, every running instance writes `.zellij-vtabs-debug-<view>-<plugin id>.json` there each second with its view, granted permissions, tracked agent statuses, and per-tab rows. Delete the trigger file to stop it.
+The release workflow accepts only a strict `vMAJOR.MINOR.PATCH` tag whose version matches `Cargo.toml`. It then creates a public GitHub Release and uploads the artifact as `zellij-vertical-tabs.wasm`.
+
+## License
+
+[MIT](LICENSE)

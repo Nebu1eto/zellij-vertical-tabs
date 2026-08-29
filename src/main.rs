@@ -791,7 +791,6 @@ impl ZellijPlugin for State {
                         }
                     }
                     View::Horizontal => {
-                        let column = column as usize;
                         if let Some(hitbox) = self
                             .visible_horizontal_tabs
                             .iter()
@@ -917,9 +916,9 @@ impl State {
             .copied()
         {
             if event.event != "SessionStart"
-                || !event
+                || event
                     .timestamp
-                    .is_some_and(|timestamp| timestamp >= session_end_timestamp)
+                    .is_none_or(|timestamp| timestamp < session_end_timestamp)
             {
                 return false;
             }

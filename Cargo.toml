@@ -16,7 +16,8 @@ name = "zellij-vertical-tabs"
 path = "src/main.rs"
 
 [profile.release]
-lto = true
+lto = "fat"
+codegen-units = 1
 opt-level = "s"
 panic = "abort"
 strip = true

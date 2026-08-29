@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4f647fc679bcd3b11499ccb42104547c83dabe96 # stable
+        with:
+          toolchain: "1.95.0"
+          targets: wasm32-wasip1
+          components: clippy, rustfmt
+
+      - name: Install Wasmtime
+        uses: jcbhmr/setup-wasmtime@960c367a99921eb0b02f5778fce9ae8f110bf0f0 # v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-features --bin zellij-vertical-tabs -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked --all-features --bin zellij-vertical-tabs
+
+      - name: Build release WASM
+        run: cargo build --locked --release --bin zellij-vertical-tabs
