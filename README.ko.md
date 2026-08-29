@@ -8,14 +8,15 @@
 
 ## 설치
 
-릴리스 파일 하나를 두 이름으로 저장합니다. Zellij는 URL을 기준으로 플러그인 인스턴스를 구분하므로, 두 보기를 같은 레이아웃에서 사용하려면 서로 다른 URL이나 파일 경로가 필요합니다.
+두 릴리스 파일을 다운로드합니다. 두 파일은 같은 플러그인 바이너리지만, Zellij가 URL을
+기준으로 플러그인 인스턴스를 구분할 수 있도록 서로 다른 이름을 사용합니다.
 
 ```sh
 mkdir -p ~/.config/zellij/plugins
-curl -fL https://github.com/Nebu1eto/zellij-vertical-tabs/releases/latest/download/zellij-vertical-tabs.wasm \
+curl -fL https://github.com/Nebu1eto/zellij-vertical-tabs/releases/latest/download/vertical-tabs.wasm \
   -o ~/.config/zellij/plugins/vertical-tabs.wasm
-cp ~/.config/zellij/plugins/vertical-tabs.wasm \
-  ~/.config/zellij/plugins/vertical-sidebar.wasm
+curl -fL https://github.com/Nebu1eto/zellij-vertical-tabs/releases/latest/download/vertical-sidebar.wasm \
+  -o ~/.config/zellij/plugins/vertical-sidebar.wasm
 ```
 
 처음 실행할 때 각 플러그인 창에 포커스를 두고 `y`를 눌러 요청된 권한을 허용합니다.
@@ -113,7 +114,9 @@ target/wasm32-wasip1/release/zellij-vertical-tabs.wasm
 
 ## 릴리스
 
-CI는 포맷, Clippy, 테스트, 릴리스 WASM 빌드를 검사합니다. 릴리스를 게시하려면 다음 순서로 진행합니다.
+CI는 포맷, Clippy, 테스트, 릴리스 WASM 빌드를 검사하고 `vertical-tabs.wasm`과
+`vertical-sidebar.wasm`을 포함한 아티팩트를 업로드합니다. 릴리스를 게시하려면 다음
+순서로 진행합니다.
 
 1. `Cargo.toml`의 `version`을 `MAJOR.MINOR.PATCH`로 설정합니다.
 2. 변경 사항을 커밋하고 푸시합니다.
@@ -124,7 +127,9 @@ CI는 포맷, Clippy, 테스트, 릴리스 WASM 빌드를 검사합니다. 릴�
    git push origin vMAJOR.MINOR.PATCH
    ```
 
-릴리스 워크플로는 `Cargo.toml` 버전과 일치하는 엄격한 `vMAJOR.MINOR.PATCH` 형식의 태그만 허용합니다. 조건을 충족하면 공개 GitHub Release를 만들고 `zellij-vertical-tabs.wasm` 파일을 업로드합니다.
+릴리스 워크플로는 `Cargo.toml` 버전과 일치하는 엄격한 `vMAJOR.MINOR.PATCH` 형식의
+태그만 허용합니다. 조건을 충족하면 공개 GitHub Release를 만들고 기존 빌드 파일과
+`vertical-tabs.wasm`, `vertical-sidebar.wasm`을 업로드합니다.
 
 ## 라이선스
 

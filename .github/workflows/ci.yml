@@ -38,3 +38,17 @@ jobs:
 
       - name: Build release WASM
         run: cargo build --locked --release --bin zellij-vertical-tabs
+
+      - name: Package plugin views
+        run: |
+          install -Dm644 target/wasm32-wasip1/release/zellij-vertical-tabs.wasm dist/vertical-tabs.wasm
+          install -Dm644 target/wasm32-wasip1/release/zellij-vertical-tabs.wasm dist/vertical-sidebar.wasm
+
+      - name: Upload plugin views
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zellij-vertical-tabs-wasm
+          path: |
+            dist/vertical-tabs.wasm
+            dist/vertical-sidebar.wasm
+          if-no-files-found: error

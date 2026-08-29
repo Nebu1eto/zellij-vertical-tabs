@@ -41,6 +41,11 @@ jobs:
       - name: Build release WASM
         run: cargo build --locked --release --bin zellij-vertical-tabs
 
+      - name: Package plugin views
+        run: |
+          install -Dm644 target/wasm32-wasip1/release/zellij-vertical-tabs.wasm dist/vertical-tabs.wasm
+          install -Dm644 target/wasm32-wasip1/release/zellij-vertical-tabs.wasm dist/vertical-sidebar.wasm
+
       - name: Generate changelog
         id: git-cliff
         uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5 # v3
@@ -54,4 +59,7 @@ jobs:
           draft: false
           prerelease: false
           body: ${{ steps.git-cliff.outputs.content }}
-          files: target/wasm32-wasip1/release/zellij-vertical-tabs.wasm
+          files: |
+            target/wasm32-wasip1/release/zellij-vertical-tabs.wasm
+            dist/vertical-tabs.wasm
+            dist/vertical-sidebar.wasm

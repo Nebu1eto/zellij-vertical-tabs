@@ -8,14 +8,15 @@ A Zellij WebAssembly plugin with two views: a horizontal status bar and a vertic
 
 ## Install
 
-Download one release artifact under two names. Zellij identifies plugin instances by URL, so layouts that use both views must give each view a distinct URL or file path.
+Download both release artifacts. They contain the same plugin binary under distinct names because
+Zellij identifies plugin instances by URL.
 
 ```sh
 mkdir -p ~/.config/zellij/plugins
-curl -fL https://github.com/Nebu1eto/zellij-vertical-tabs/releases/latest/download/zellij-vertical-tabs.wasm \
+curl -fL https://github.com/Nebu1eto/zellij-vertical-tabs/releases/latest/download/vertical-tabs.wasm \
   -o ~/.config/zellij/plugins/vertical-tabs.wasm
-cp ~/.config/zellij/plugins/vertical-tabs.wasm \
-  ~/.config/zellij/plugins/vertical-sidebar.wasm
+curl -fL https://github.com/Nebu1eto/zellij-vertical-tabs/releases/latest/download/vertical-sidebar.wasm \
+  -o ~/.config/zellij/plugins/vertical-sidebar.wasm
 ```
 
 On first launch, focus each plugin pane and press `y` to grant the requested permissions.
@@ -113,7 +114,8 @@ target/wasm32-wasip1/release/zellij-vertical-tabs.wasm
 
 ## Release
 
-Continuous integration checks formatting, Clippy, tests, and the release WASM build. To publish a release:
+Continuous integration checks formatting, Clippy, tests, and the release WASM build. It uploads one
+artifact containing `vertical-tabs.wasm` and `vertical-sidebar.wasm`. To publish a release:
 
 1. Set `version` in `Cargo.toml` to `MAJOR.MINOR.PATCH`.
 2. Commit and push that change.
@@ -124,7 +126,9 @@ Continuous integration checks formatting, Clippy, tests, and the release WASM bu
    git push origin vMAJOR.MINOR.PATCH
    ```
 
-The release workflow accepts only a strict `vMAJOR.MINOR.PATCH` tag whose version matches `Cargo.toml`. It then creates a public GitHub Release and uploads the artifact as `zellij-vertical-tabs.wasm`.
+The release workflow accepts only a strict `vMAJOR.MINOR.PATCH` tag whose version matches
+`Cargo.toml`. It then creates a public GitHub Release and uploads the original build plus
+`vertical-tabs.wasm` and `vertical-sidebar.wasm`.
 
 ## License
 
