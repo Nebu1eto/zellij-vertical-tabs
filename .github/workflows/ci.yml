@@ -24,9 +24,6 @@ jobs:
           targets: wasm32-wasip1
           components: clippy, rustfmt
 
-      - name: Install Wasmtime
-        uses: jcbhmr/setup-wasmtime@960c367a99921eb0b02f5778fce9ae8f110bf0f0 # v2
-
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -34,7 +31,7 @@ jobs:
         run: cargo clippy --locked --all-features --bin zellij-vertical-tabs -- -D warnings
 
       - name: Run tests
-        run: cargo test --locked --all-features --bin zellij-vertical-tabs
+        run: cargo test --locked --target x86_64-unknown-linux-gnu --all-features --bin zellij-vertical-tabs
 
       - name: Build release WASM
         run: cargo build --locked --release --bin zellij-vertical-tabs
