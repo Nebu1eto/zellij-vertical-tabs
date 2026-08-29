@@ -4,7 +4,7 @@
 
 가로 상태 표시줄과 세로 사이드바를 제공하는 Zellij WebAssembly 플러그인입니다. 탭, 저장소, 브랜치, 연결된 워크트리 상태와 시계, choco-pi, Claude Code, Codex 및 터미널에서 감지한 코딩 에이전트의 상태를 표시합니다.
 
-![가로 상태 표시줄과 탭·코딩 에이전트 세로 사이드바](assets/demo.png)
+![탭과 코딩 에이전트를 표시하는 가로 상태 표시줄과 세로 사이드바](assets/demo.png)
 
 ## 설치
 
@@ -94,7 +94,7 @@ color_agent_urgent_fg  color_agent_urgent_bg
 zellij pipe --name coding-agent-status -- "$payload"
 ```
 
-JSON에는 창, 이벤트, 도구, 작업 요약, 에이전트 종류, 타임스탬프를 넣을 수 있습니다. choco-pi, Claude Code, Codex의 훅 이벤트는 해당 창의 상태를 갱신합니다.
+JSON에는 창, 이벤트, 도구, 작업 요약, 소스 에이전트, 타임스탬프를 넣을 수 있습니다. choco-pi, Claude Code, Codex의 훅 이벤트는 해당 창의 상태를 갱신합니다.
 
 ## 빌드
 

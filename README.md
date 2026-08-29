@@ -4,11 +4,11 @@ English | [한국어](README.ko.md)
 
 A Zellij WebAssembly plugin with two views: a horizontal status bar and a vertical sidebar. It shows tabs, repository, branch, and linked-worktree state, a clock, and coding-agent status for choco-pi, Claude Code, Codex, and detected terminal agents.
 
-![Horizontal status bar with a vertical tabs and coding-agents sidebar](assets/demo.png)
+![Horizontal status bar and vertical sidebar showing tabs and coding agents](assets/demo.png)
 
 ## Install
 
-Download one release artifact under two names. Zellij keys plugin instances by URL, so layouts that use both views must give each view a distinct URL or file path.
+Download one release artifact under two names. Zellij identifies plugin instances by URL, so layouts that use both views must give each view a distinct URL or file path.
 
 ```sh
 mkdir -p ~/.config/zellij/plugins
@@ -105,7 +105,7 @@ rustup target add wasm32-wasip1
 cargo build --release
 ```
 
-The artifact is written to:
+The build writes the artifact to:
 
 ```text
 target/wasm32-wasip1/release/zellij-vertical-tabs.wasm
