@@ -2510,6 +2510,7 @@ fn tab_display_name(tab: &TabInfo, repo: Option<&RepoInfo>) -> String {
 fn tab_detail_line(repo: Option<&RepoInfo>, cwd: Option<&str>) -> String {
     match repo {
         Some(repo) => match &repo.worktree {
+            Some(worktree) if repo.branch == *worktree => format!("⑂{worktree}"),
             Some(worktree) => format!("{} · ⑂{}", repo.branch, worktree),
             None => repo.branch.clone(),
         },
@@ -3452,6 +3453,16 @@ mod tests {
         assert_eq!(
             tab_detail_line(Some(&worktree), None),
             "fix/auth · ⑂fix-auth"
+        );
+
+        let matching_worktree = RepoInfo {
+            repository: "medpath".to_string(),
+            branch: "medpath-wt-2".to_string(),
+            worktree: Some("medpath-wt-2".to_string()),
+        };
+        assert_eq!(
+            tab_detail_line(Some(&matching_worktree), None),
+            "⑂medpath-wt-2"
         );
 
         let detached = parse_repo_info(
