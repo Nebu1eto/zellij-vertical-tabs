@@ -152,7 +152,7 @@ fn multiple_agent_sessions_are_tracked_per_pane() {
 }
 
 #[test]
-fn agent_cards_carry_location_state_and_task() {
+fn agent_cards_carry_location_session_agent_and_state() {
     let mut state = State::default();
     for (tab, pane_id) in [(0, 7), (0, 8), (1, 12)] {
         state.panes.panes.entry(tab).or_default().push(PaneInfo {
@@ -191,16 +191,28 @@ fn agent_cards_carry_location_state_and_task() {
             .iter()
             .map(|entry| entry.name.as_str())
             .collect::<Vec<_>>(),
-        ["1·1 choco-pi", "1·2 Claude Code", "2·1 Codex"],
+        [
+            "1·1 fix coding agent integration",
+            "1·2 Claude Code",
+            "2·1 Codex",
+        ],
         "cards follow tab then pane order"
     );
     assert_eq!(entries[0].state, AgentState::Working);
     assert!(
-        entries[0].detail.as_deref().unwrap().ends_with("· exec"),
-        "the running tool names what the agent is doing now"
+        entries[0]
+            .detail
+            .as_deref()
+            .unwrap()
+            .starts_with("choco-pi · "),
+        "the second row names the coding agent before elapsed time"
     );
     assert_eq!(entries[1].state, AgentState::Blocked);
-    assert!(entries[1].detail.as_deref().unwrap().ends_with("· Bash"));
+    assert!(entries[1]
+        .detail
+        .as_deref()
+        .unwrap()
+        .starts_with("Claude Code · "));
     assert_eq!(entries[2].state, AgentState::Done);
 }
 
@@ -605,7 +617,7 @@ fn vertical_sidebar_renders_tab_and_agent_sections() {
         source: "choco-pi".to_string(),
         event: "PermissionRequest".to_string(),
         tool: Some("Bash".to_string()),
-        summary: None,
+        summary: Some("fix the sidebar".to_string()),
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -622,10 +634,14 @@ fn vertical_sidebar_renders_tab_and_agent_sections() {
         "the tab header counts tabs and panes"
     );
     assert!(
-        output.contains("1·1 choco-pi"),
-        "cards show tab·pane and agent"
+        output.contains("1·1 fix the sidebar"),
+        "the first row shows tab·pane and session name"
     );
     assert!(output.contains("blocked"), "cards show the state text");
+    assert!(
+        output.contains("choco-pi"),
+        "the second row names the coding agent"
+    );
     assert!(output.contains('◉'), "blocked uses its own glyph");
 
     assert_eq!(
@@ -774,7 +790,7 @@ fn an_active_agent_stays_active_while_the_model_is_quiet() {
 }
 
 #[test]
-fn an_agent_card_shows_the_running_tool_then_falls_back_to_the_task() {
+fn an_agent_card_keeps_its_session_name_while_tools_change() {
     let mut state = State::default();
     state.panes.panes.insert(
         0,
@@ -792,16 +808,11 @@ fn an_agent_card_shows_the_running_tool_then_falls_back_to_the_task() {
         timestamp: Some(1),
     }));
     let entry = state.agent_entries().remove(0);
-    assert!(
-        entry
-            .detail
-            .as_deref()
-            .is_some_and(|detail| detail.ends_with("· reading code")),
-        "the card names the running tool, got {:?}",
-        entry.detail
-    );
+    assert_eq!(entry.name, "1·1 ship the sidebar");
+    assert!(entry.detail.as_deref().unwrap().starts_with("choco-pi · "));
+    assert!(!entry.detail.as_deref().unwrap().contains("reading code"));
 
-    // With the turn over there is no tool, so the task takes the slot back.
+    // Ending a tool or turn does not change the session label's position.
     assert!(state.apply_agent_event(AgentEvent {
         source: "choco-pi".to_string(),
         event: "Stop".to_string(),
@@ -811,14 +822,8 @@ fn an_agent_card_shows_the_running_tool_then_falls_back_to_the_task() {
         timestamp: Some(2),
     }));
     let entry = state.agent_entries().remove(0);
-    assert!(
-        entry
-            .detail
-            .as_deref()
-            .is_some_and(|detail| detail.ends_with("· ship the sidebar")),
-        "the task returns once the tool call ends, got {:?}",
-        entry.detail
-    );
+    assert_eq!(entry.name, "1·1 ship the sidebar");
+    assert!(entry.detail.as_deref().unwrap().starts_with("choco-pi · "));
 }
 
 #[test]

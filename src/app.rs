@@ -730,8 +730,8 @@ impl State {
         y
     }
 
-    /// Agent cards: state dot with location and agent name, then a dim row with
-    /// the state, how long it has held and the current task.
+    /// Agent cards: state dot with location and session name, then a dim row
+    /// with the state, coding-agent name and elapsed time.
     pub(crate) fn render_vertical_agents(
         &mut self,
         frame: &mut AnsiFrame,
@@ -872,27 +872,21 @@ impl State {
         self.sorted_agent_statuses()
             .into_iter()
             .map(|status| {
+                let session_name = status
+                    .summary
+                    .clone()
+                    .or_else(|| self.agent_title_suffix(status.pane_id))
+                    .unwrap_or_else(|| status.source.clone());
                 let name = match self.pane_location(status.pane_id) {
-                    Some((tab, pane)) => format!("{}·{} {}", tab + 1, pane + 1, status.source),
-                    None => status.source.clone(),
+                    Some((tab, pane)) => format!("{}·{} {session_name}", tab + 1, pane + 1),
+                    None => session_name,
                 };
                 let elapsed = elapsed_label(now.saturating_sub(status.since));
-                // What the agent is doing right now beats the task it is doing
-                // it for; the task returns to the card once the tool call ends.
-                let task = status
-                    .detail
-                    .clone()
-                    .or_else(|| status.summary.clone())
-                    .or_else(|| self.agent_title_suffix(status.pane_id));
-                let detail = match task {
-                    Some(task) => Some(format!("{elapsed} · {task}")),
-                    None => Some(elapsed),
-                };
                 AgentEntry {
                     pane_id: status.pane_id,
                     state: status.state,
                     name,
-                    detail,
+                    detail: Some(format!("{} · {elapsed}", status.source)),
                 }
             })
             .collect()
