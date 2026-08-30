@@ -56,6 +56,7 @@ pub(crate) struct State {
     pub(crate) border_char: String,
     pub(crate) vertical_separator_enabled: bool,
     pub(crate) vertical_separator_char: String,
+    pub(crate) initial_sidebar_width: Option<usize>,
     pub(crate) colors: Colors,
     pub(crate) visible_vertical_tabs: Vec<(usize, usize)>,
     pub(crate) visible_horizontal_tabs: Vec<TabHitbox>,
@@ -63,6 +64,7 @@ pub(crate) struct State {
     pub(crate) session_end_timestamp_by_pane: HashMap<u32, u64>,
     pub(crate) pending_width_sync: Option<PendingWidthSync>,
     pub(crate) last_observed_sidebar_width: Option<usize>,
+    pub(crate) last_observed_tab_width: Option<usize>,
     pub(crate) tabs_with_user_content: HashSet<usize>,
 }
 
@@ -138,6 +140,10 @@ impl ZellijPlugin for State {
             .filter(|value| !value.is_empty())
             .cloned()
             .unwrap_or_else(|| "│".to_string());
+        self.initial_sidebar_width = configuration
+            .get("initial_width")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|width| *width > 0);
         self.git_refresh_interval = configuration
             .get("command_git_branch_interval")
             .and_then(|value| value.parse().ok())
@@ -362,10 +368,25 @@ impl State {
         let Some((width, _)) = active_sidebar_state(&self.tabs, &self.panes, plugin_id) else {
             return;
         };
+        let Some(tab_width) = active_tab_width(&self.tabs, &self.panes) else {
+            return;
+        };
         let previous_width = self.last_observed_sidebar_width.replace(width);
-        if previous_width.is_none_or(|previous| previous == width) {
+        let previous_tab_width = self.last_observed_tab_width.replace(tab_width);
+        if self.pending_width_sync.is_some() {
             return;
         }
+        let target_width = match previous_width {
+            None => self.initial_sidebar_width.filter(|target| *target != width),
+            Some(previous) if previous_tab_width.is_some_and(|value| value != tab_width) => {
+                (previous != width).then_some(previous)
+            }
+            Some(previous) if previous != width => Some(width),
+            Some(_) => None,
+        };
+        let Some(target_width) = target_width else {
+            return;
+        };
 
         let mut pane_ids = visible_vertical_sidebar_ids(&self.panes);
         if !pane_ids.contains(&plugin_id) {
@@ -373,7 +394,7 @@ impl State {
             pane_ids.sort_unstable();
         }
         self.pending_width_sync = Some(PendingWidthSync {
-            target_width: width,
+            target_width,
             pane_ids,
             last_requested_widths: HashMap::new(),
             attempts_remaining: WIDTH_SYNC_MAX_ATTEMPTS,

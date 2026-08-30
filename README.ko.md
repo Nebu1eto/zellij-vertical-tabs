@@ -23,7 +23,7 @@ curl -fL https://github.com/Nebu1eto/zellij-vertical-tabs/releases/latest/downlo
 
 ## 설정
 
-다음 레이아웃은 서로 다른 경로에서 가로 보기와 세로 보기를 불러옵니다. 백분율 크기를 사용하면 사이드바의 초기 너비를 정하면서도 나중에 크기를 조절할 수 있습니다.
+다음 레이아웃은 서로 다른 경로에서 가로 보기와 세로 보기를 불러옵니다. 정확한 열 너비를 유지하면서 크기를 조절할 수 있도록 사이드바 pane의 size는 지정하지 않습니다.
 
 ```kdl
 layout {
@@ -36,9 +36,10 @@ layout {
     }
     pane split_direction="vertical" {
         pane
-        pane size="30%" borderless=true {
+        pane borderless=true {
             plugin location="file:~/.config/zellij/plugins/vertical-sidebar.wasm" {
                 view "vertical"
+                initial_width "28"
                 home "/Users/example"
                 vertical_separator_enabled "true"
                 vertical_separator_char "│"
@@ -56,6 +57,7 @@ layout {
 | `show_tabs` | 가로 탭 표시 여부. 기본값은 `"true"` |
 | `timezone_offset_hours` | UTC 기준 시계 오프셋(시간) |
 | `home` | 작업 디렉터리를 표시할 때 사용할 홈 경로 |
+| `initial_width` | 세로 사이드바의 초기 열 너비. 크기 조절을 유지하려면 레이아웃 pane의 size를 지정하지 않음 |
 | `vertical_separator_enabled` | 사이드바 구분선 표시 여부. 기본값은 `"true"` |
 | `vertical_separator_char` | 사이드바 구분선 문자. 기본값은 `"│"` |
 | `border_enabled` | 사이드바 구분선과 별개인 가로 보기 테두리 사용 여부 |

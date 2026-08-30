@@ -472,6 +472,17 @@ pub(crate) fn active_sidebar_state(
     })
 }
 
+pub(crate) fn active_tab_width(tabs: &[TabInfo], panes: &PaneManifest) -> Option<usize> {
+    let active_position = tabs.iter().find(|tab| tab.active)?.position;
+    panes
+        .panes
+        .get(&active_position)?
+        .iter()
+        .filter(|pane| !pane.is_suppressed)
+        .map(|pane| pane.pane_x.saturating_add(pane.pane_columns))
+        .max()
+}
+
 pub(crate) fn own_tab_content_state(
     tabs: &[TabInfo],
     panes: &PaneManifest,

@@ -1345,6 +1345,154 @@ fn exact_widths_complete_pending_sync_without_actions() {
 }
 
 #[test]
+fn configured_initial_width_starts_a_sync_on_the_first_observation() {
+    let mut state = State {
+        view: View::Vertical,
+        plugin_id: Some(11),
+        initial_sidebar_width: Some(28),
+        tabs: vec![TabInfo {
+            position: 0,
+            active: true,
+            ..TabInfo::default()
+        }],
+        ..State::default()
+    };
+    state.panes.panes.insert(
+        0,
+        vec![PaneInfo {
+            id: 11,
+            is_plugin: true,
+            plugin_url: Some("file:/plugins/vertical-sidebar.wasm".to_string()),
+            pane_columns: 24,
+            ..PaneInfo::default()
+        }],
+    );
+
+    state.observe_sidebar_width_change();
+
+    assert_eq!(
+        state.pending_width_sync,
+        Some(PendingWidthSync {
+            target_width: 28,
+            pane_ids: vec![11],
+            last_requested_widths: HashMap::new(),
+            attempts_remaining: WIDTH_SYNC_MAX_ATTEMPTS,
+        })
+    );
+}
+
+#[test]
+fn pending_initial_width_sync_is_not_retargeted_to_an_intermediate_width() {
+    let mut state = State {
+        view: View::Vertical,
+        plugin_id: Some(11),
+        initial_sidebar_width: Some(28),
+        tabs: vec![TabInfo {
+            position: 0,
+            active: true,
+            ..TabInfo::default()
+        }],
+        ..State::default()
+    };
+    state.panes.panes.insert(
+        0,
+        vec![PaneInfo {
+            id: 11,
+            is_plugin: true,
+            plugin_url: Some("file:/plugins/vertical-sidebar.wasm".to_string()),
+            pane_columns: 24,
+            ..PaneInfo::default()
+        }],
+    );
+    state.observe_sidebar_width_change();
+    state.panes.panes.get_mut(&0).unwrap()[0].pane_columns = 25;
+
+    state.observe_sidebar_width_change();
+
+    assert_eq!(state.pending_width_sync.unwrap().target_width, 28);
+}
+
+#[test]
+fn a_terminal_resize_preserves_the_sidebar_column_width() {
+    let mut state = State {
+        view: View::Vertical,
+        plugin_id: Some(11),
+        tabs: vec![TabInfo {
+            position: 0,
+            active: true,
+            ..TabInfo::default()
+        }],
+        ..State::default()
+    };
+    state.panes.panes.insert(
+        0,
+        vec![
+            PaneInfo {
+                id: 11,
+                is_plugin: true,
+                plugin_url: Some("file:/plugins/vertical-sidebar.wasm".to_string()),
+                pane_columns: 28,
+                ..PaneInfo::default()
+            },
+            PaneInfo {
+                id: 7,
+                pane_x: 28,
+                pane_columns: 72,
+                ..PaneInfo::default()
+            },
+        ],
+    );
+    state.observe_sidebar_width_change();
+    state.panes.panes.get_mut(&0).unwrap()[0].pane_columns = 31;
+    state.panes.panes.get_mut(&0).unwrap()[1].pane_x = 31;
+    state.panes.panes.get_mut(&0).unwrap()[1].pane_columns = 89;
+
+    state.observe_sidebar_width_change();
+
+    assert_eq!(state.pending_width_sync.unwrap().target_width, 28);
+}
+
+#[test]
+fn a_manual_resize_adopts_the_new_sidebar_column_width() {
+    let mut state = State {
+        view: View::Vertical,
+        plugin_id: Some(11),
+        tabs: vec![TabInfo {
+            position: 0,
+            active: true,
+            ..TabInfo::default()
+        }],
+        ..State::default()
+    };
+    state.panes.panes.insert(
+        0,
+        vec![
+            PaneInfo {
+                id: 11,
+                is_plugin: true,
+                plugin_url: Some("file:/plugins/vertical-sidebar.wasm".to_string()),
+                pane_columns: 28,
+                ..PaneInfo::default()
+            },
+            PaneInfo {
+                id: 7,
+                pane_x: 28,
+                pane_columns: 72,
+                ..PaneInfo::default()
+            },
+        ],
+    );
+    state.observe_sidebar_width_change();
+    state.panes.panes.get_mut(&0).unwrap()[0].pane_columns = 30;
+    state.panes.panes.get_mut(&0).unwrap()[1].pane_x = 30;
+    state.panes.panes.get_mut(&0).unwrap()[1].pane_columns = 70;
+
+    state.observe_sidebar_width_change();
+
+    assert_eq!(state.pending_width_sync.unwrap().target_width, 30);
+}
+
+#[test]
 fn pending_sync_plans_from_live_widths_not_payload_deltas() {
     let mut pending = Some(PendingWidthSync {
         target_width: 29,

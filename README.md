@@ -23,7 +23,7 @@ On first launch, focus each plugin pane and press `y` to grant the requested per
 
 ## Configure
 
-This layout loads the horizontal and vertical views from distinct paths. The percentage size sets the sidebar's initial width while keeping it resizable.
+This layout loads the horizontal and vertical views from distinct paths. Leave the sidebar pane size unset so the plugin can establish and preserve an exact, resizable column width.
 
 ```kdl
 layout {
@@ -36,9 +36,10 @@ layout {
     }
     pane split_direction="vertical" {
         pane
-        pane size="30%" borderless=true {
+        pane borderless=true {
             plugin location="file:~/.config/zellij/plugins/vertical-sidebar.wasm" {
                 view "vertical"
+                initial_width "28"
                 home "/Users/example"
                 vertical_separator_enabled "true"
                 vertical_separator_char "│"
@@ -56,6 +57,7 @@ The main configuration keys are:
 | `show_tabs` | Show horizontal tabs; defaults to `"true"` |
 | `timezone_offset_hours` | Clock offset from UTC, in hours |
 | `home` | Home path used in displayed working directories |
+| `initial_width` | Initial vertical-sidebar width in columns; leave the layout pane size unset so it remains resizable |
 | `vertical_separator_enabled` | Show the sidebar separator; defaults to `"true"` |
 | `vertical_separator_char` | Sidebar separator; defaults to `"│"` |
 | `border_enabled` | Enable the horizontal-view border independently of the sidebar separator |
