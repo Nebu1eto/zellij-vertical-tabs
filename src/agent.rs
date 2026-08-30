@@ -280,7 +280,8 @@ pub(crate) struct AgentEntry {
     pub(crate) pane_id: u32,
     pub(crate) state: AgentState,
     pub(crate) name: String,
-    pub(crate) detail: Option<String>,
+    pub(crate) agent_name: String,
+    pub(crate) elapsed: String,
 }
 
 #[derive(Clone, Debug)]

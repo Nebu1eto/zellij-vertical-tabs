@@ -199,20 +199,10 @@ fn agent_cards_carry_location_session_agent_and_state() {
         "cards follow tab then pane order"
     );
     assert_eq!(entries[0].state, AgentState::Working);
-    assert!(
-        entries[0]
-            .detail
-            .as_deref()
-            .unwrap()
-            .starts_with("choco-pi · "),
-        "the second row names the coding agent before elapsed time"
-    );
+    assert_eq!(entries[0].agent_name, "choco-pi");
+    assert!(!entries[0].elapsed.is_empty());
     assert_eq!(entries[1].state, AgentState::Blocked);
-    assert!(entries[1]
-        .detail
-        .as_deref()
-        .unwrap()
-        .starts_with("Claude Code · "));
+    assert_eq!(entries[1].agent_name, "Claude Code");
     assert_eq!(entries[2].state, AgentState::Done);
 }
 
@@ -809,8 +799,8 @@ fn an_agent_card_keeps_its_session_name_while_tools_change() {
     }));
     let entry = state.agent_entries().remove(0);
     assert_eq!(entry.name, "1·1 ship the sidebar");
-    assert!(entry.detail.as_deref().unwrap().starts_with("choco-pi · "));
-    assert!(!entry.detail.as_deref().unwrap().contains("reading code"));
+    assert_eq!(entry.agent_name, "choco-pi");
+    assert!(!entry.elapsed.contains("reading code"));
 
     // Ending a tool or turn does not change the session label's position.
     assert!(state.apply_agent_event(AgentEvent {
@@ -823,7 +813,7 @@ fn an_agent_card_keeps_its_session_name_while_tools_change() {
     }));
     let entry = state.agent_entries().remove(0);
     assert_eq!(entry.name, "1·1 ship the sidebar");
-    assert!(entry.detail.as_deref().unwrap().starts_with("choco-pi · "));
+    assert_eq!(entry.agent_name, "choco-pi");
 }
 
 #[test]

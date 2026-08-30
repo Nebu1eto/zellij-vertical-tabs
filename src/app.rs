@@ -844,21 +844,22 @@ impl State {
                 &truncate_line(state_text, content_cols.saturating_sub(3)),
             );
             let used = 3 + cell_width(state_text);
-            if let Some(detail) = &entry.detail {
-                let room = content_cols.saturating_sub(used);
-                if room >= 4 {
-                    let detail_style = Style {
-                        fg: if focused { detail_style.fg } else { dim.fg },
-                        bg: row_bg,
-                        bold: false,
-                    };
-                    frame.put(
-                        used,
-                        y + 1,
-                        detail_style,
-                        &truncate_line(&format!(" · {detail}"), room),
-                    );
-                }
+            let room = content_cols.saturating_sub(used);
+            let separators = cell_width(" · ") + cell_width(" · ");
+            let reserved = separators + cell_width(&entry.elapsed);
+            if room > reserved {
+                let agent_name = truncate_line(&entry.agent_name, room - reserved);
+                let detail_style = Style {
+                    fg: if focused { detail_style.fg } else { dim.fg },
+                    bg: row_bg,
+                    bold: false,
+                };
+                frame.put(
+                    used,
+                    y + 1,
+                    detail_style,
+                    &format!(" · {agent_name} · {}", entry.elapsed),
+                );
             }
             self.agent_focus_targets.push((y + 1, 0, entry.pane_id));
             y += 2;
@@ -886,7 +887,8 @@ impl State {
                     pane_id: status.pane_id,
                     state: status.state,
                     name,
-                    detail: Some(format!("{} · {elapsed}", status.source)),
+                    agent_name: status.source.clone(),
+                    elapsed,
                 }
             })
             .collect()
