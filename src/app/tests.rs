@@ -1685,11 +1685,13 @@ fn detects_when_own_tab_has_only_layout_ui_plugins() {
 fn preserves_complete_clock_in_a_common_horizontal_budget() {
     let clock = "  2025-01-02 03:04 ";
     let right_budget = (80_usize - 15) * 2 / 5;
-    let (context, clock) = fit_right_parts(
+    let (context, music, clock) = fit_right_segments(
         " choco-pi   feature/long-branch · cargo-watch",
+        "",
         clock,
         right_budget,
     );
+    assert!(music.is_empty());
     let rendered = format!("{context}{clock}");
     assert_eq!(cell_width(&rendered), right_budget);
     assert!(rendered.contains('…'));
@@ -1700,4 +1702,59 @@ fn preserves_complete_clock_in_a_common_horizontal_budget() {
 fn truncates_to_the_available_cell_width() {
     assert_eq!(fit_line(" 1  choco-pi", 10), " 1  choco…");
     assert_eq!(fit_line("abc", 5), "abc  ");
+}
+
+#[test]
+fn music_gives_way_before_context_and_clock() {
+    let context = " choco-pi   main · cargo";
+    let music = "  Artist - A Rather Long Song Title ";
+    let clock = "  2025-01-02 03:04 ";
+    let full = cell_width(context) + cell_width(music) + cell_width(clock);
+
+    let (c, m, k) = fit_right_segments(context, music, clock, full);
+    assert_eq!(
+        (c.as_str(), m.as_str(), k.as_str()),
+        (context, music, clock)
+    );
+
+    let (c, m, k) = fit_right_segments(context, music, clock, full - 10);
+    assert_eq!(c, context, "context keeps its width");
+    assert_eq!(k, clock);
+    assert!(m.ends_with('…') && cell_width(&m) == cell_width(music) - 10);
+
+    let (c, m, k) = fit_right_segments(
+        context,
+        music,
+        clock,
+        cell_width(context) + cell_width(clock) + 3,
+    );
+    assert!(m.is_empty(), "a sliver of music is dropped, not shown");
+    assert_eq!(cell_width(&c), cell_width(context) + 3);
+    assert_eq!(k, clock);
+
+    let (c, m, k) = fit_right_segments("", "", clock, 40);
+    assert_eq!(
+        (cell_width(&c), m.as_str(), k.as_str()),
+        (40 - cell_width(clock), "", clock)
+    );
+}
+
+#[test]
+fn music_segment_hides_when_disabled_or_silent() {
+    let mut state = State::default();
+    state.music_format = DEFAULT_MUSIC_FORMAT.to_string();
+    state.music_max_width = 12;
+    state.now_playing = parse_now_playing("playing12SongArtistAlbum");
+    assert_eq!(state.music_content(), "");
+    state.right_panel = RightPanel::Both;
+    assert_eq!(state.music_content(), "  Artist - So… ");
+    state.now_playing = None;
+    assert_eq!(state.music_content(), "");
+    let (_, clock) = state.right_content();
+    assert!(!clock.is_empty());
+    state.right_panel = RightPanel::Music;
+    assert!(
+        state.right_content().1.is_empty(),
+        "music alone drops the clock"
+    );
 }

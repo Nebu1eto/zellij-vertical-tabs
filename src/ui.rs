@@ -43,6 +43,7 @@ pub(crate) struct Colors {
     pub(crate) cwd_active: Style,
     pub(crate) context: Style,
     pub(crate) clock: Style,
+    pub(crate) music: Style,
     pub(crate) border: Style,
     pub(crate) agent: Style,
     pub(crate) agent_urgent: Style,
@@ -136,6 +137,7 @@ impl Colors {
             ),
             context: style("color_context", Rgb(216, 222, 233), Rgb(59, 66, 82), false),
             clock: style("color_clock", Rgb(46, 52, 64), Rgb(136, 192, 208), true),
+            music: style("color_music", Rgb(46, 52, 64), Rgb(180, 142, 173), false),
             border: style("color_border", Rgb(76, 86, 106), background, false),
             agent: style("color_agent", Rgb(46, 52, 64), Rgb(163, 190, 140), true),
             agent_urgent: style(
@@ -875,12 +877,32 @@ pub(crate) fn truncate_line(value: &str, width: usize) -> String {
     }
 }
 
-pub(crate) fn fit_right_parts(context: &str, clock: &str, width: usize) -> (String, String) {
+/// Splits the right budget between context, music, and clock. The clock is
+/// never cut before the others, the context keeps its full width next, and the
+/// music segment takes what is left or disappears when that is too little to read.
+pub(crate) fn fit_right_segments(
+    context: &str,
+    music: &str,
+    clock: &str,
+    width: usize,
+) -> (String, String, String) {
+    const MIN_MUSIC_WIDTH: usize = 6;
     let clock_width = cell_width(clock);
     if width <= clock_width {
-        return (String::new(), fit_line(clock, width));
+        return (String::new(), String::new(), fit_line(clock, width));
     }
-    (fit_line(context, width - clock_width), sanitize_text(clock))
+    let remaining = width - clock_width;
+    let music_width = cell_width(music).min(remaining.saturating_sub(cell_width(context)));
+    let music = if music_width < MIN_MUSIC_WIDTH {
+        String::new()
+    } else {
+        fit_line(music, music_width)
+    };
+    (
+        fit_line(context, remaining - cell_width(&music)),
+        music,
+        sanitize_text(clock),
+    )
 }
 
 pub(crate) fn horizontal_content_split(

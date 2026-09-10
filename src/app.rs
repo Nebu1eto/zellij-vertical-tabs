@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use zellij_tile::prelude::*;
 
 use crate::agent::*;
+use crate::music::*;
 use crate::ui::Style;
 use crate::ui::*;
 
@@ -51,6 +52,14 @@ pub(crate) struct State {
     pub(crate) git_refresh_interval: u8,
     pub(crate) timezone_offset_hours: i32,
     pub(crate) datetime_format: String,
+    pub(crate) right_panel: RightPanel,
+    pub(crate) music_format: String,
+    pub(crate) music_max_width: usize,
+    /// Unknown until `uname` answers; Apple Music is only polled on Darwin.
+    pub(crate) host_is_macos: Option<bool>,
+    pub(crate) now_playing: Option<NowPlaying>,
+    pub(crate) music_refresh_pending: bool,
+    pub(crate) music_next_poll_at: u64,
     pub(crate) show_tabs: bool,
     pub(crate) border_enabled: bool,
     pub(crate) border_char: String,
@@ -121,6 +130,9 @@ impl ZellijPlugin for State {
             .clamp(-23, 23);
         self.datetime_format =
             validated_datetime_format(configuration.get("datetime_format").map(String::as_str));
+        self.right_panel = RightPanel::from_config(&configuration);
+        self.music_format = configured_music_format(&configuration);
+        self.music_max_width = configured_music_max_width(&configuration);
         self.show_tabs = configuration
             .get("show_tabs")
             .is_none_or(|value| value != "false");
@@ -203,6 +215,33 @@ impl ZellijPlugin for State {
                 }
             }
             Event::RunCommandResult(exit_code, stdout, _, context) => {
+                match context.get("kind").map(String::as_str) {
+                    Some("uname") => {
+                        let stdout = String::from_utf8_lossy(&stdout);
+                        self.host_is_macos =
+                            Some(exit_code == Some(0) && stdout.trim() == "Darwin");
+                        self.music_refresh_pending = false;
+                        self.refresh_music();
+                        return false;
+                    }
+                    Some("music") => {
+                        self.music_refresh_pending = false;
+                        let previous = self.now_playing.take();
+                        if exit_code == Some(0) {
+                            self.now_playing = parse_now_playing(&String::from_utf8_lossy(&stdout));
+                        }
+                        // A failing osascript (typically a denied automation
+                        // prompt) backs off further so it cannot spam the host.
+                        let delay = if exit_code == Some(0) {
+                            next_poll_delay_seconds(self.now_playing.as_ref())
+                        } else {
+                            30
+                        };
+                        self.music_next_poll_at = unix_seconds() + delay;
+                        return previous != self.now_playing;
+                    }
+                    _ => {}
+                }
                 if context.get("kind").map(String::as_str) == Some("repo") {
                     if let Some(position) =
                         context.get("tab").and_then(|tab| tab.parse::<usize>().ok())
@@ -244,6 +283,7 @@ impl ZellijPlugin for State {
             Event::Timer(_) => {
                 set_timeout(1.0);
                 self.hydrate_agent_statuses();
+                self.refresh_music();
                 if std::path::Path::new(DEBUG_TRIGGER_PATH).exists() {
                     let view = match self.view {
                         View::Horizontal => "horizontal",
@@ -487,6 +527,7 @@ impl State {
         let session = format!(" {session} ");
         let left = format!("{mode}{session}");
         let (context, clock) = self.right_content();
+        let music = self.music_content();
         let (center_context, right_context, right_clock) = horizontal_content_split(
             self.show_tabs,
             !self.agent_statuses.is_empty(),
@@ -498,6 +539,7 @@ impl State {
         let max_right = available_right.saturating_mul(2) / 5;
         let clock_width = cell_width(&right_clock).min(available_right);
         let right_width = cell_width(&right_context)
+            .saturating_add(cell_width(&music))
             .saturating_add(cell_width(&right_clock))
             .min(max_right.max(clock_width));
 
@@ -517,11 +559,14 @@ impl State {
             );
         }
         if right_width > 0 {
-            let (context, clock) = fit_right_parts(&right_context, &right_clock, right_width);
+            let (context, music, clock) =
+                fit_right_segments(&right_context, &music, &right_clock, right_width);
             let right_start = cols - right_width;
             frame.put(right_start, 0, self.colors.context, &context);
+            let music_start = right_start + cell_width(&context);
+            frame.put(music_start, 0, self.colors.music, &music);
             frame.put(
-                right_start + cell_width(&context),
+                music_start + cell_width(&music),
                 0,
                 self.colors.clock,
                 &clock,
@@ -1326,10 +1371,14 @@ impl State {
     }
 
     pub(crate) fn right_content(&self) -> (String, String) {
-        let clock = format!(
-            "  {} ",
-            current_time(self.timezone_offset_hours, &self.datetime_format)
-        );
+        let clock = if self.right_panel.shows_clock() {
+            format!(
+                "  {} ",
+                current_time(self.timezone_offset_hours, &self.datetime_format)
+            )
+        } else {
+            String::new()
+        };
         let command = self.active_command.as_deref().unwrap_or("shell");
         if let Some(git) = &self.git_context {
             let dirty = if git.dirty { "*" } else { "" };
@@ -1348,6 +1397,49 @@ impl State {
             .and_then(|name| name.to_str())
             .unwrap_or("workspace");
         (format!(" {location} · {command}"), clock)
+    }
+
+    /// The now-playing segment, already clipped to its configured width; empty
+    /// when music is not shown or nothing is playing.
+    pub(crate) fn music_content(&self) -> String {
+        if !self.right_panel.shows_music() {
+            return String::new();
+        }
+        let Some(track) = &self.now_playing else {
+            return String::new();
+        };
+        let text = format_now_playing(&self.music_format, track);
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if text.is_empty() {
+            return String::new();
+        }
+        format!("  {} ", truncate_line(&text, self.music_max_width))
+    }
+
+    /// Polls Apple Music when due. The first call asks the host for its OS
+    /// instead, reusing the pending flag so only one command is in flight.
+    pub(crate) fn refresh_music(&mut self) {
+        if self.view != View::Horizontal
+            || !self.permissions_granted
+            || !self.right_panel.shows_music()
+            || self.music_refresh_pending
+        {
+            return;
+        }
+        let mut context = BTreeMap::new();
+        match self.host_is_macos {
+            None => {
+                context.insert("kind".to_string(), "uname".to_string());
+                self.music_refresh_pending = true;
+                run_command(&["uname", "-s"], context);
+            }
+            Some(true) if unix_seconds() >= self.music_next_poll_at => {
+                context.insert("kind".to_string(), "music".to_string());
+                self.music_refresh_pending = true;
+                run_command(&["osascript", "-e", NOW_PLAYING_SCRIPT], context);
+            }
+            _ => {}
+        }
     }
 
     pub(crate) fn refresh_active_pane(&mut self) {

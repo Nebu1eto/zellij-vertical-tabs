@@ -1,5 +1,6 @@
 mod agent;
 mod app;
+mod music;
 mod ui;
 
 use app::State;

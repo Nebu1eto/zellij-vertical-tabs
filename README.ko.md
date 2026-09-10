@@ -62,6 +62,15 @@ layout {
 | `vertical_separator_char` | 사이드바 구분선 문자. 기본값은 `"│"` |
 | `border_enabled` | 사이드바 구분선과 별개인 가로 보기 테두리 사용 여부 |
 | `border_char` | 가로 보기 테두리 문자 |
+| `right_panel` | 가로 막대 오른쪽 끝: `"clock"`(기본값), `"music"`, `"both"`. music 옵션은 macOS 전용이며 다른 OS에서는 시계로 대체 |
+| `music_format` | 재생 중 텍스트. 자리표시자 `{music}`(또는 `{title}`), `{artist}`, `{album}`, `{albumart}`. 기본값은 `"{artist} - {music}"` |
+| `music_max_width` | 재생 중 텍스트의 최대 열 너비. 초과하면 `…`로 자름. 기본값은 `"40"` |
+
+### 재생 중 표시
+
+`right_panel "music"` 또는 `"both"`를 지정하면 Apple Music이 재생 중이거나 일시정지한 트랙을 막대에 표시합니다. AirPlay로 재생 중인 경우도 포함됩니다. Music이 정지되어 있거나 실행 중이 아니면 표시하지 않으며, 플러그인이 Music을 실행하지는 않습니다. Zellij가 호스트에서 `osascript`로 Music에 접근하므로 macOS가 Zellij 서버에 대한 자동화 권한을 한 번 묻습니다. 거부하면 표시가 비어 있습니다. 폴링 주기는 트랙에 맞춰 조정됩니다. 재생 중에는 남은 시간의 절반(3–20초), 그 외에는 10초입니다.
+
+`{albumart}`는 현재 `♪`로 표시됩니다. Zellij 0.45는 플러그인 pane의 kitty 그래픽 프로토콜을 버리고 Ghostty는 sixel을 지원하지 않아 아직 앨범 아트를 그릴 방법이 없습니다.
 
 색상에는 `#RRGGBB` 또는 `RRGGBB` 형식을 사용합니다. 값이 올바르지 않으면 내장 Nord 기본값을 사용합니다. 다음 키를 설정할 수 있습니다.
 
@@ -84,6 +93,7 @@ color_cwd_normal_fg  color_cwd_normal_bg
 color_cwd_active_fg  color_cwd_active_bg
 color_context_fg  color_context_bg
 color_clock_fg  color_clock_bg
+color_music_fg  color_music_bg
 color_border_fg  color_border_bg
 color_agent_fg  color_agent_bg
 color_agent_urgent_fg  color_agent_urgent_bg

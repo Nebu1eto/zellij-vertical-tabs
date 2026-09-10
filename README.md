@@ -62,6 +62,15 @@ The main configuration keys are:
 | `vertical_separator_char` | Sidebar separator; defaults to `"│"` |
 | `border_enabled` | Enable the horizontal-view border independently of the sidebar separator |
 | `border_char` | Horizontal-view border character |
+| `right_panel` | Right end of the horizontal bar: `"clock"` (default), `"music"`, or `"both"`; the music options need macOS and fall back to the clock elsewhere |
+| `music_format` | Now-playing text; placeholders `{music}` (or `{title}`), `{artist}`, `{album}`, `{albumart}`; defaults to `"{artist} - {music}"` |
+| `music_max_width` | Maximum now-playing width in columns before it is cut with `…`; defaults to `"40"` |
+
+### Now playing
+
+With `right_panel "music"` or `"both"`, the bar shows the track Apple Music is playing or has paused, including playback over AirPlay. The segment is hidden while Music is stopped or closed and is never opened by the plugin. Zellij runs `osascript` against Music on the host, so macOS shows an Automation permission prompt for the Zellij server once; a denied prompt leaves the segment empty. Polling adapts to the track: half the remaining time, bounded to 3–20 seconds, while playing and every 10 seconds otherwise.
+
+`{albumart}` currently renders as `♪`. Zellij 0.45 discards the kitty graphics protocol from plugin panes and Ghostty has no sixel support, so there is no path to draw the artwork yet.
 
 Colors accept `#RRGGBB` or `RRGGBB`. Invalid values use the built-in Nord defaults. Available keys are:
 
@@ -84,6 +93,7 @@ color_cwd_normal_fg  color_cwd_normal_bg
 color_cwd_active_fg  color_cwd_active_bg
 color_context_fg  color_context_bg
 color_clock_fg  color_clock_bg
+color_music_fg  color_music_bg
 color_border_fg  color_border_bg
 color_agent_fg  color_agent_bg
 color_agent_urgent_fg  color_agent_urgent_bg
