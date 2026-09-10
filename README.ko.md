@@ -68,7 +68,7 @@ layout {
 
 ### 재생 중 표시
 
-`right_panel "music"` 또는 `"both"`를 지정하면 Apple Music이 재생 중이거나 일시정지한 트랙을 막대에 표시합니다. AirPlay로 재생 중인 경우도 포함됩니다. Music이 정지되어 있거나 실행 중이 아니면 표시하지 않으며, 플러그인이 Music을 실행하지는 않습니다. Zellij가 호스트에서 `osascript`로 Music에 접근하므로 macOS가 Zellij 서버에 대한 자동화 권한을 한 번 묻습니다. 거부하면 표시가 비어 있습니다. 폴링 주기는 트랙에 맞춰 조정됩니다. 재생 중에는 남은 시간의 절반(3–20초), 그 외에는 10초입니다.
+`right_panel "music"` 또는 `"both"`를 지정하면 Apple Music이 재생 중이거나 일시정지한 트랙을 막대에 표시합니다. Music의 AirPlay 선택 창에서 **컴퓨터** 항목의 스피커로 재생하는 경우도 포함됩니다. **홈** 항목에서 HomePod이나 Apple TV를 선택하면 해당 기기가 직접 Apple Music을 재생하고 Music은 리모컨 역할만 하므로, macOS가 Mac의 플레이어를 보고하지 않아 표시가 비어 있습니다. Music이 정지되어 있거나 실행 중이 아닐 때도 표시하지 않으며, 플러그인이 Music을 실행하지는 않습니다. Zellij가 호스트에서 `osascript`로 Music에 접근하므로 macOS가 Zellij 서버에 대한 자동화 권한을 한 번 묻습니다. 거부하면 표시가 비어 있습니다. 폴링 주기는 트랙에 맞춰 조정됩니다. 재생 중에는 남은 시간의 절반(3–20초), 그 외에는 10초입니다.
 
 `{albumart}`는 현재 `♪`로 표시됩니다. Zellij 0.45는 플러그인 pane의 kitty 그래픽 프로토콜을 버리고 Ghostty는 sixel을 지원하지 않아 아직 앨범 아트를 그릴 방법이 없습니다.
 

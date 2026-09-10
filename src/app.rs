@@ -536,7 +536,10 @@ impl State {
         );
         let left_width = cell_width(&left).min(cols);
         let available_right = cols.saturating_sub(left_width);
-        let max_right = available_right.saturating_mul(2) / 5;
+        // Music may widen the right side by up to another fifth of the bar, so
+        // it does not have to fit in the space context and clock already fill.
+        let max_right =
+            available_right.saturating_mul(2) / 5 + cell_width(&music).min(available_right / 5);
         let clock_width = cell_width(&right_clock).min(available_right);
         let right_width = cell_width(&right_context)
             .saturating_add(cell_width(&music))
@@ -1135,6 +1138,13 @@ impl State {
             "focused_terminal_pane": self.focused_terminal_pane,
             "plugin_id": self.plugin_id,
             "permissions_granted": self.permissions_granted,
+            "music": serde_json::json!({
+                "right_panel": format!("{:?}", self.right_panel),
+                "host_is_macos": self.host_is_macos,
+                "refresh_pending": self.music_refresh_pending,
+                "next_poll_at": self.music_next_poll_at,
+                "now_playing": self.now_playing.as_ref().map(|track| format!("{track:?}")),
+            }),
             "agent_statuses": statuses,
             "tabs": tabs,
         })

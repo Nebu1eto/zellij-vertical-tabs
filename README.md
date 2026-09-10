@@ -68,7 +68,7 @@ The main configuration keys are:
 
 ### Now playing
 
-With `right_panel "music"` or `"both"`, the bar shows the track Apple Music is playing or has paused, including playback over AirPlay. The segment is hidden while Music is stopped or closed and is never opened by the plugin. Zellij runs `osascript` against Music on the host, so macOS shows an Automation permission prompt for the Zellij server once; a denied prompt leaves the segment empty. Polling adapts to the track: half the remaining time, bounded to 3–20 seconds, while playing and every 10 seconds otherwise.
+With `right_panel "music"` or `"both"`, the bar shows the track Apple Music is playing or has paused, including playback over AirPlay when the speaker is selected under **Computer** in the AirPlay picker of Music. A HomePod or Apple TV selected under **Home** plays Apple Music by itself while Music only acts as a remote; macOS then reports no player on the Mac and the segment stays hidden. The segment is also hidden while Music is stopped or closed, and the plugin never opens Music. Zellij runs `osascript` against Music on the host, so macOS shows an Automation permission prompt for the Zellij server once; a denied prompt leaves the segment empty. Polling adapts to the track: half the remaining time, bounded to 3–20 seconds, while playing and every 10 seconds otherwise.
 
 `{albumart}` currently renders as `♪`. Zellij 0.45 discards the kitty graphics protocol from plugin panes and Ghostty has no sixel support, so there is no path to draw the artwork yet.
 
