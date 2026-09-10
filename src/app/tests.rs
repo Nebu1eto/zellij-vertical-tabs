@@ -1808,6 +1808,30 @@ fn music_gives_way_before_context_and_clock() {
 }
 
 #[test]
+fn music_segment_hides_on_pause_and_stop_and_returns_on_resume() {
+    let mut state = State::default();
+    state.music_format = DEFAULT_MUSIC_FORMAT.to_string();
+    state.music_max_width = DEFAULT_MUSIC_MAX_WIDTH;
+    for panel in [RightPanel::Music, RightPanel::Both] {
+        state.right_panel = panel;
+        for playback in ["playing", "paused", "playing", "stopped", "playing"] {
+            let output =
+                [playback, "1", "2", "Song", "Artist", "Album"].join(&FIELD_SEPARATOR.to_string());
+            state.now_playing = parse_now_playing(&output);
+            assert_eq!(
+                state.music_content(),
+                if playback == "playing" {
+                    "  Artist - Song "
+                } else {
+                    ""
+                },
+                "{panel:?}: {playback}"
+            );
+        }
+    }
+}
+
+#[test]
 fn music_segment_hides_when_disabled_or_silent() {
     let mut state = State::default();
     state.music_format = DEFAULT_MUSIC_FORMAT.to_string();

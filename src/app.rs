@@ -1431,6 +1431,9 @@ impl State {
         let Some(track) = &self.now_playing else {
             return String::new();
         };
+        if track.state != PlayerState::Playing {
+            return String::new();
+        }
         let text = format_now_playing(&self.music_format, track);
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if text.is_empty() {
