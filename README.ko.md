@@ -65,6 +65,7 @@ layout {
 | `right_panel` | 가로 막대 오른쪽 끝: `"clock"`(기본값), `"music"`, `"both"`. music 옵션은 macOS 전용이며 다른 OS에서는 시계로 대체 |
 | `music_format` | 재생 중 텍스트. 자리표시자 `{music}`(또는 `{title}`), `{artist}`, `{album}`, `{albumart}`. 기본값은 `"{artist} - {music}"` |
 | `music_max_width` | 재생 중 텍스트의 최대 열 너비. 초과하면 `…`로 자름. 기본값은 `"40"` |
+| `center_anchor` | 가로 막대 가운데의 탭·컨텍스트·에이전트 상태를 맞추는 기준. `"bar"`(기본값)는 막대 중앙, `"content"`는 활성 탭에서 세로 사이드바를 제외한 pane 영역의 중앙. 어느 쪽이든 좌우 구간과 겹치면 옆으로 밀림 |
 
 ### 재생 중 표시
 

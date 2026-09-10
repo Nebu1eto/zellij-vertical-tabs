@@ -555,17 +555,68 @@ pub(crate) fn ansi_style(style: Style) -> String {
     )
 }
 
+/// Leftmost column for a centered group: anchored on `anchor`, then pushed
+/// inside the bounds so it never overlaps the left or right bar segments.
 pub(crate) fn horizontal_group_start(
-    cols: usize,
+    anchor: usize,
     total_width: usize,
     left_bound: usize,
     right_bound: usize,
 ) -> usize {
     let latest_start = right_bound.saturating_sub(total_width).max(left_bound);
-    cols.saturating_sub(total_width)
-        .checked_div(2)
-        .unwrap_or(0)
+    anchor
+        .saturating_sub(total_width / 2)
         .clamp(left_bound, latest_start)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CenterAnchor {
+    /// Middle of the bar itself.
+    #[default]
+    Bar,
+    /// Middle of the pane area beside a vertical sidebar in the active tab;
+    /// the bar middle when there is no sidebar.
+    Content,
+}
+
+impl CenterAnchor {
+    pub(crate) fn from_config(configuration: &BTreeMap<String, String>) -> Self {
+        match configuration.get("center_anchor").map(String::as_str) {
+            Some("content") => CenterAnchor::Content,
+            _ => CenterAnchor::Bar,
+        }
+    }
+}
+
+/// Midpoint of the active tab's area not covered by a vertical sidebar
+/// (another instance of this plugin), in screen columns.
+pub(crate) fn content_center(
+    tabs: &[TabInfo],
+    panes: &PaneManifest,
+    plugin_id: Option<u32>,
+) -> Option<usize> {
+    let active_position = tabs.iter().find(|tab| tab.active)?.position;
+    let tab_panes = panes.panes.get(&active_position)?;
+    let tab_width = active_tab_width(tabs, panes)?;
+    let own_url = tab_panes
+        .iter()
+        .find(|pane| Some(pane.id) == plugin_id)
+        .and_then(|pane| pane.plugin_url.as_deref());
+    let sidebar = tab_panes.iter().find(|pane| {
+        Some(pane.id) != plugin_id
+            && pane.is_plugin
+            && !pane.is_suppressed
+            && !pane.is_floating
+            && (is_layout_ui_pane(pane)
+                || (own_url.is_some() && pane.plugin_url.as_deref() == own_url))
+            && pane.pane_columns < tab_width
+    })?;
+    let (start, end) = if sidebar.pane_x == 0 {
+        (sidebar.pane_columns, tab_width)
+    } else {
+        (0, sidebar.pane_x)
+    };
+    Some(start + end.saturating_sub(start) / 2)
 }
 
 /// Repository identity for one tab, resolved with a single git invocation.

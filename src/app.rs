@@ -53,6 +53,7 @@ pub(crate) struct State {
     pub(crate) timezone_offset_hours: i32,
     pub(crate) datetime_format: String,
     pub(crate) right_panel: RightPanel,
+    pub(crate) center_anchor: CenterAnchor,
     pub(crate) music_format: String,
     pub(crate) music_max_width: usize,
     /// Unknown until `uname` answers; Apple Music is only polled on Darwin.
@@ -131,6 +132,7 @@ impl ZellijPlugin for State {
         self.datetime_format =
             validated_datetime_format(configuration.get("datetime_format").map(String::as_str));
         self.right_panel = RightPanel::from_config(&configuration);
+        self.center_anchor = CenterAnchor::from_config(&configuration);
         self.music_format = configured_music_format(&configuration);
         self.music_max_width = configured_music_max_width(&configuration);
         self.show_tabs = configuration
@@ -580,6 +582,7 @@ impl State {
         let center_end = cols.saturating_sub(right_width.saturating_add(1));
         if center_end > center_start {
             let available = center_end - center_start;
+            let anchor = self.center_anchor_column(cols);
             if !self.agent_statuses.is_empty() {
                 let segments = self.agent_status_segments(available);
                 let total_width = segments
@@ -587,7 +590,7 @@ impl State {
                     .map(|(text, _)| cell_width(text))
                     .sum::<usize>()
                     .min(available);
-                let mut x = center_start + available.saturating_sub(total_width) / 2;
+                let mut x = horizontal_group_start(anchor, total_width, center_start, center_end);
                 for (text, style) in segments {
                     frame.put(
                         x,
@@ -600,10 +603,10 @@ impl State {
             } else if let Some(context) = center_context {
                 let rendered = fit_line(&context, available);
                 let width = cell_width(rendered.trim_end());
-                let x = center_start + available.saturating_sub(width) / 2;
+                let x = horizontal_group_start(anchor, width, center_start, center_end);
                 frame.put(x, 0, self.colors.context, rendered.trim_end());
             } else {
-                self.render_horizontal_tabs(frame, cols, center_start, center_end);
+                self.render_horizontal_tabs(frame, anchor, center_start, center_end);
             }
         }
 
@@ -617,10 +620,20 @@ impl State {
         }
     }
 
+    /// Screen column the centered group is balanced around.
+    pub(crate) fn center_anchor_column(&self, cols: usize) -> usize {
+        match self.center_anchor {
+            CenterAnchor::Bar => cols / 2,
+            CenterAnchor::Content => content_center(&self.tabs, &self.panes, self.plugin_id)
+                .filter(|center| *center < cols)
+                .unwrap_or(cols / 2),
+        }
+    }
+
     pub(crate) fn render_horizontal_tabs(
         &mut self,
         frame: &mut AnsiFrame,
-        cols: usize,
+        anchor: usize,
         left_bound: usize,
         right_bound: usize,
     ) {
@@ -641,7 +654,7 @@ impl State {
             .iter()
             .map(|(_, rendered)| cell_width(rendered))
             .sum();
-        let mut x = horizontal_group_start(cols, total_width, left_bound, right_bound);
+        let mut x = horizontal_group_start(anchor, total_width, left_bound, right_bound);
         for (index, rendered) in rendered_tabs {
             let tab = &self.tabs[index];
             let rendered_width = cell_width(&rendered);

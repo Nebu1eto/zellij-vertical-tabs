@@ -65,6 +65,7 @@ The main configuration keys are:
 | `right_panel` | Right end of the horizontal bar: `"clock"` (default), `"music"`, or `"both"`; the music options need macOS and fall back to the clock elsewhere |
 | `music_format` | Now-playing text; placeholders `{music}` (or `{title}`), `{artist}`, `{album}`, `{albumart}`; defaults to `"{artist} - {music}"` |
 | `music_max_width` | Maximum now-playing width in columns before it is cut with `…`; defaults to `"40"` |
+| `center_anchor` | Where the centered tabs, context, or agent status of the horizontal bar are balanced: `"bar"` (default) uses the middle of the bar; `"content"` uses the middle of the pane area beside a vertical sidebar in the active tab. Either way the group is pushed aside when it would overlap the left or right segments |
 
 ### Now playing
 

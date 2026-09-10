@@ -1214,9 +1214,77 @@ fn repeats_border_patterns_to_the_exact_cell_width() {
 
 #[test]
 fn centers_horizontal_tabs_on_the_full_pane_and_clamps_around_content() {
-    assert_eq!(horizontal_group_start(100, 20, 15, 85), 40);
-    assert_eq!(horizontal_group_start(100, 60, 25, 90), 25);
-    assert_eq!(horizontal_group_start(100, 30, 10, 60), 30);
+    assert_eq!(horizontal_group_start(50, 20, 15, 85), 40);
+    assert_eq!(horizontal_group_start(50, 60, 25, 90), 25);
+    assert_eq!(horizontal_group_start(50, 30, 10, 60), 30);
+    assert_eq!(
+        horizontal_group_start(74, 20, 15, 85),
+        64,
+        "content anchor shifts right"
+    );
+}
+
+#[test]
+fn content_anchor_centers_beside_the_sidebar() {
+    let tabs = vec![TabInfo {
+        position: 0,
+        active: true,
+        ..TabInfo::default()
+    }];
+    let bar = PaneInfo {
+        id: 1,
+        is_plugin: true,
+        plugin_url: Some("file:/x/vertical-tabs.wasm".to_string()),
+        pane_columns: 120,
+        pane_rows: 2,
+        ..PaneInfo::default()
+    };
+    let sidebar = PaneInfo {
+        id: 2,
+        is_plugin: true,
+        plugin_url: Some("file:/x/vertical-sidebar.wasm".to_string()),
+        pane_x: 0,
+        pane_y: 2,
+        pane_columns: 28,
+        pane_rows: 40,
+        ..PaneInfo::default()
+    };
+    let terminal = PaneInfo {
+        id: 3,
+        pane_x: 28,
+        pane_y: 2,
+        pane_columns: 92,
+        pane_rows: 40,
+        ..PaneInfo::default()
+    };
+    let mut panes = PaneManifest::default();
+    panes
+        .panes
+        .insert(0, vec![bar.clone(), sidebar.clone(), terminal.clone()]);
+    assert_eq!(content_center(&tabs, &panes, Some(1)), Some(28 + 46));
+
+    let right_sidebar = PaneInfo {
+        pane_x: 92,
+        ..sidebar
+    };
+    panes
+        .panes
+        .insert(0, vec![bar.clone(), right_sidebar, terminal]);
+    assert_eq!(content_center(&tabs, &panes, Some(1)), Some(46));
+
+    panes.panes.insert(0, vec![bar]);
+    assert_eq!(
+        content_center(&tabs, &panes, Some(1)),
+        None,
+        "no sidebar, no anchor"
+    );
+
+    let mut state = State::default();
+    state.tabs = tabs;
+    state.panes = panes;
+    state.plugin_id = Some(1);
+    state.center_anchor = CenterAnchor::Content;
+    assert_eq!(state.center_anchor_column(120), 60);
 }
 
 #[test]
