@@ -1850,3 +1850,196 @@ fn music_segment_hides_when_disabled_or_silent() {
         "music alone drops the clock"
     );
 }
+
+fn space_state(tabs: Vec<TabInfo>) -> State {
+    let mut state = State::default();
+    state.spaces_enabled = true;
+    state.space_separator = "/".to_string();
+    state.default_space_name = "main".to_string();
+    state.tabs = tabs;
+    state
+}
+
+fn space_tab(position: usize, tab_id: usize, name: &str, active: bool) -> TabInfo {
+    TabInfo {
+        position,
+        tab_id,
+        name: name.to_string(),
+        active,
+        ..TabInfo::default()
+    }
+}
+
+#[test]
+fn the_bar_shows_only_the_active_spaces_tabs_numbered_inside_it() {
+    let mut state = space_state(vec![
+        space_tab(0, 0, "work/api", false),
+        space_tab(1, 1, "docs/readme", false),
+        space_tab(2, 2, "work/web", true),
+    ]);
+    let colors = Colors::default();
+    let mut frame = AnsiFrame::new(1, 60, &colors);
+    state.render_horizontal_tabs(&mut frame, 30, 0, 60);
+    let output = frame.finish();
+
+    assert!(
+        output.contains("1 api"),
+        "the space's first tab is numbered 1"
+    );
+    assert!(
+        output.contains("2 web"),
+        "numbering is per space, not global"
+    );
+    assert!(
+        !output.contains("readme"),
+        "another space's tabs stay hidden, got {output:?}"
+    );
+    // Clicks still address the real tab positions.
+    assert_eq!(
+        state
+            .visible_horizontal_tabs
+            .iter()
+            .map(|hitbox| hitbox.position)
+            .collect::<Vec<_>>(),
+        vec![0, 2]
+    );
+}
+
+#[test]
+fn renaming_a_tab_shows_the_name_being_edited() {
+    let mut state = space_state(vec![space_tab(0, 0, "work/api", true)]);
+    state.mode = InputMode::RenameTab;
+    let view = state.visible_tab_indices();
+    assert_eq!(
+        state.tab_bar_labels(&view),
+        vec![" 1 work/api ".to_string()]
+    );
+}
+
+#[test]
+fn the_sidebar_lists_spaces_as_cards() {
+    let mut state = space_state(vec![
+        space_tab(0, 0, "work/api", true),
+        space_tab(1, 1, "docs/readme", false),
+    ]);
+    state.view = View::Vertical;
+    let colors = Colors::default();
+    let mut frame = AnsiFrame::new(10, 30, &colors);
+    state.render_vertical(&mut frame, 10, 30);
+    let output = frame.finish();
+
+    assert!(output.contains("Spaces"), "the sidebar lists spaces");
+    assert!(output.contains("2 spaces"), "the totals count spaces");
+    assert!(
+        output.contains("1 work"),
+        "the active space is listed first"
+    );
+    assert!(output.contains("2 docs"), "other spaces stay listed");
+    assert!(
+        !output.contains("readme") && !output.contains("api"),
+        "tab names belong to the bar, not the sidebar, got {output:?}"
+    );
+    // Both rows of a card switch to its space.
+    assert_eq!(
+        state
+            .visible_vertical_spaces
+            .iter()
+            .map(|(_, index)| *index)
+            .collect::<Vec<_>>(),
+        vec![0, 0, 1, 1]
+    );
+}
+
+#[test]
+fn disabled_spaces_keep_the_global_tab_list() {
+    let mut state = State::default();
+    state.tabs = vec![
+        space_tab(0, 0, "work/api", true),
+        space_tab(1, 1, "docs/readme", false),
+    ];
+    let view = state.visible_tab_indices();
+    assert_eq!(view, vec![0, 1]);
+    assert_eq!(
+        state.tab_bar_labels(&view),
+        vec![" 1 work/api ".to_string(), " 2 docs/readme ".to_string()]
+    );
+}
+
+#[test]
+fn closed_tabs_do_not_leave_remembered_state_behind() {
+    let mut state = space_state(vec![space_tab(0, 7, "work/api", true)]);
+    state.remember_active_space_tab();
+    state.tabs_with_user_content.insert(7);
+    assert_eq!(state.last_focused_tab_by_space.get("work"), Some(&7));
+
+    // The tab closes and Zellij reuses its id for a tab of another space.
+    state.tabs = vec![space_tab(0, 7, "docs/readme", true)];
+    state.prune_closed_tab_state();
+    assert!(
+        state.last_focused_tab_by_space.get("work").is_none(),
+        "a space that no longer exists keeps no remembered tab"
+    );
+    assert!(
+        state.tabs_with_user_content.contains(&7),
+        "a live tab id is kept"
+    );
+
+    state.tabs = vec![space_tab(0, 9, "docs/readme", true)];
+    state.prune_closed_tab_state();
+    assert!(
+        !state.tabs_with_user_content.contains(&7),
+        "a closed tab id is dropped so a reused id starts clean"
+    );
+}
+
+#[test]
+fn the_tab_strip_is_left_aligned_with_the_button_after_the_tabs() {
+    let mut state = space_state(vec![
+        space_tab(0, 0, "work/api", true),
+        space_tab(1, 1, "docs/readme", false),
+        space_tab(2, 2, "work/web", false),
+    ]);
+    state.view = View::Tabs;
+    let colors = Colors::default();
+    let mut frame = AnsiFrame::new(1, 40, &colors);
+    state.render_space_tabs(&mut frame, 1, 40);
+    let output = frame.finish();
+
+    assert!(
+        output.contains("1 api"),
+        "the active space's tabs are listed"
+    );
+    assert!(output.contains("2 web"), "numbering is per space");
+    assert!(
+        !output.contains("readme"),
+        "another space stays hidden, got {output:?}"
+    );
+    assert!(output.contains("+"), "the new-tab button is drawn");
+    let first = state.visible_horizontal_tabs.first().expect("a tab hitbox");
+    assert_eq!(first.start, 0, "tabs are left aligned");
+    assert_eq!(first.position, 0);
+    let last = state.visible_horizontal_tabs.last().expect("a tab hitbox");
+    assert_eq!(
+        state.plus_hitbox,
+        Some((last.end, last.end + 3)),
+        "the button follows the last tab"
+    );
+}
+
+#[test]
+fn a_full_strip_drops_the_button_instead_of_overlapping() {
+    let mut state = space_state(vec![space_tab(0, 0, "work/a-very-long-tab-name", true)]);
+    state.view = View::Tabs;
+    let colors = Colors::default();
+    let mut frame = AnsiFrame::new(1, 10, &colors);
+    state.render_space_tabs(&mut frame, 1, 10);
+    let tabs = &state.visible_horizontal_tabs;
+    assert!(
+        tabs.iter().all(|hitbox| hitbox.end <= 10),
+        "tabs stay inside the strip"
+    );
+    assert_eq!(
+        state.plus_hitbox, None,
+        "no room left means no button rather than a clipped one"
+    );
+}

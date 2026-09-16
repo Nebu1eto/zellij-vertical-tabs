@@ -100,6 +100,69 @@ color_agent_fg  color_agent_bg
 color_agent_urgent_fg  color_agent_urgent_bg
 ```
 
+## 스페이스
+
+스페이스는 이름 접두사를 공유하는 탭 묶음입니다. 예를 들어 `work/api`와 `work/web`은 모두 `work` 스페이스에 속합니다. 사이드바는 스페이스 목록을 보여 주고, 가로 막대는 활성 스페이스의 탭만 보여 주며, pane은 평소의 Zellij 분할 그대로입니다. 탭 이름을 바꾸면 그 탭이 다른 스페이스로 옮겨집니다.
+
+이 기능은 기본적으로 꺼져 있습니다. 두 보기 모두에서 켜 주세요.
+
+```kdl
+plugin location="file:~/.config/zellij/plugins/vertical-sidebar.wasm" {
+    view "vertical"
+    spaces "true"
+}
+```
+
+플러그인은 자기 pane이 포커스를 가진 동안에만 키를 받기 때문에, 스페이스 조작은 키바인드로 전달합니다. `config.kdl`에 아래를 추가하고, 같은 키에 걸려 있던 `GoToTab` 바인딩은 제거하세요. 그 동작은 전역 탭 번호를 가리키므로 스페이스를 가로질러 이동합니다.
+
+```kdl
+keybinds {
+    normal {
+        bind "Super n" { MessagePlugin { name "vtabs:space-new"; }; }
+        bind "Super t" { MessagePlugin { name "vtabs:tab-new"; }; }
+        bind "Super 1" { MessagePlugin { name "vtabs:space-switch"; payload "1"; }; }
+        bind "Super 2" { MessagePlugin { name "vtabs:space-switch"; payload "2"; }; }
+        bind "Super Alt Right" { MessagePlugin { name "vtabs:tab-next"; }; }
+        bind "Super Alt Left" { MessagePlugin { name "vtabs:tab-prev"; }; }
+    }
+}
+```
+
+`MessagePlugin`에는 플러그인 URL을 적지 않습니다. URL을 적으면 Zellij가 위치와 설정을 함께 비교해 실행 중인 인스턴스를 찾기 때문에, 레이아웃의 모든 설정 키를 그대로 반복하지 않은 바인딩은 사이드바에 닿지 못하고 플러그인 pane을 새로 엽니다.
+
+| 명령 | 동작 |
+| --- | --- |
+| `vtabs:space-new` | 첫 탭과 함께 새 스페이스 생성 |
+| `vtabs:tab-new` | 활성 스페이스에 새 탭 생성 |
+| `vtabs:space-switch` | `payload` 번째 스페이스로, 마지막에 머문 탭으로 이동 |
+| `vtabs:tab-next`, `vtabs:tab-prev` | 활성 스페이스 안에서 탭 순환 |
+
+`spaces`가 꺼져 있으면 같은 바인딩이 본래 Zellij 동작대로 새 탭, 번호로 탭 이동, 다음/이전 탭으로 작동합니다.
+
+| 키 | 값 또는 용도 |
+| --- | --- |
+| `spaces` | 탭을 스페이스로 묶기, 기본값 `"false"` |
+| `space_separator` | 스페이스와 탭 이름 구분자, 기본값 `"/"` |
+| `default_space_name` | 구분자가 없는 탭이 속할 스페이스, 기본값 `"main"` |
+
+### 탭 바
+
+스페이스를 켤 때는 탭 줄을 스페이스 내용 위의 한 줄짜리 pane으로 분리하세요. 상태 표시줄 가운데가 에이전트와 음악용으로 남습니다.
+
+```kdl
+pane split_direction="horizontal" {
+    pane size=1 borderless=true {
+        plugin location="file:~/.config/zellij/plugins/vertical-tabs.wasm" {
+            view "tabs"
+            spaces "true"
+        }
+    }
+    children
+}
+```
+
+이 줄은 활성 스페이스의 탭을 왼쪽부터 나열하고 마지막 탭 바로 뒤에 `+` 버튼을 둡니다. 탭을 누르면 이동하고 `+`를 누르면 스페이스에 탭이 추가됩니다. 가로 상태 표시줄에는 `show_tabs "false"`를 두어 탭이 두 번 그려지지 않게 하세요.
+
 ## 코딩 에이전트 상태
 
 훅을 설정하지 않아도 플러그인이 지원하는 터미널 에이전트 프로세스를 감지합니다. 훅을 사용하면 다음 이름의 파이프로 JSON을 보내 수명 주기와 작업 세부 정보를 추가할 수 있습니다.

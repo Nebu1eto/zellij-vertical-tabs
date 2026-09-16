@@ -100,6 +100,69 @@ color_agent_fg  color_agent_bg
 color_agent_urgent_fg  color_agent_urgent_bg
 ```
 
+## Spaces
+
+A space is a group of tabs that share a name prefix, so `work/api` and `work/web` belong to the space `work`. The sidebar lists the spaces, the horizontal bar shows only the tabs of the active space, and panes stay ordinary Zellij splits. Renaming a tab moves it to another space.
+
+The feature is off by default. Enable it on both views:
+
+```kdl
+plugin location="file:~/.config/zellij/plugins/vertical-sidebar.wasm" {
+    view "vertical"
+    spaces "true"
+}
+```
+
+Spaces are driven by keybinds, because a plugin only receives keys while its own pane is focused. Add these to `config.kdl`, and remove any `GoToTab` bindings on the same keys, which address global tab indices and would jump across spaces:
+
+```kdl
+keybinds {
+    normal {
+        bind "Super n" { MessagePlugin { name "vtabs:space-new"; }; }
+        bind "Super t" { MessagePlugin { name "vtabs:tab-new"; }; }
+        bind "Super 1" { MessagePlugin { name "vtabs:space-switch"; payload "1"; }; }
+        bind "Super 2" { MessagePlugin { name "vtabs:space-switch"; payload "2"; }; }
+        bind "Super Alt Right" { MessagePlugin { name "vtabs:tab-next"; }; }
+        bind "Super Alt Left" { MessagePlugin { name "vtabs:tab-prev"; }; }
+    }
+}
+```
+
+Write `MessagePlugin` without a plugin URL. With a URL, Zellij matches the running instance by location *and* configuration, so a binding that does not repeat every key of the layout opens a second plugin pane instead of reaching the sidebar.
+
+| Command | Effect |
+| --- | --- |
+| `vtabs:space-new` | New space with its first tab |
+| `vtabs:tab-new` | New tab in the active space |
+| `vtabs:space-switch` | Switch to the space in `payload`, on the tab it was last left on |
+| `vtabs:tab-next`, `vtabs:tab-prev` | Cycle tabs inside the active space |
+
+With `spaces` off, the same bindings keep their plain Zellij meaning: a new tab, a tab by index, and the next or previous tab.
+
+| Key | Values or purpose |
+| --- | --- |
+| `spaces` | Group tabs into spaces; defaults to `"false"` |
+| `space_separator` | Separator between space and tab name; defaults to `"/"` |
+| `default_space_name` | Space for tabs without a separator; defaults to `"main"` |
+
+### Tab bar
+
+With spaces on, put the tab strip in its own one-line pane above the space's content, so the status bar keeps its middle for agents and music:
+
+```kdl
+pane split_direction="horizontal" {
+    pane size=1 borderless=true {
+        plugin location="file:~/.config/zellij/plugins/vertical-tabs.wasm" {
+            view "tabs"
+            spaces "true"
+        }
+    }
+    children
+}
+```
+
+The strip lists the active space's tabs from the left edge and puts a `+` button directly after the last tab; clicking a tab switches to it and clicking `+` adds a tab to the space. Set `show_tabs "false"` on the horizontal status bar so the tabs are not drawn twice.
+
 ## Coding-agent status
 
 The plugin detects supported terminal agent processes without hooks. Hooks add lifecycle and task details by sending JSON through the named pipe:

@@ -214,33 +214,33 @@ impl AnsiFrame {
 }
 
 pub(crate) fn horizontal_visible_indices(
-    tabs: &[TabInfo],
+    labels: &[String],
     active: usize,
     width: usize,
 ) -> Vec<usize> {
-    if tabs.is_empty() || width == 0 {
+    if labels.is_empty() || width == 0 {
         return Vec::new();
     }
-    let mut selected = vec![active.min(tabs.len() - 1)];
-    let mut used = cell_width(&tab_label(&tabs[selected[0]])).min(24);
+    let mut selected = vec![active.min(labels.len() - 1)];
+    let mut used = cell_width(&labels[selected[0]]).min(24);
     let mut distance = 1;
-    while selected.len() < tabs.len() {
+    while selected.len() < labels.len() {
         let mut added = false;
         for candidate in [active.checked_sub(distance), active.checked_add(distance)]
             .into_iter()
             .flatten()
         {
-            if candidate >= tabs.len() || selected.contains(&candidate) {
+            if candidate >= labels.len() || selected.contains(&candidate) {
                 continue;
             }
-            let candidate_width = cell_width(&tab_label(&tabs[candidate])).min(24);
+            let candidate_width = cell_width(&labels[candidate]).min(24);
             if used + candidate_width <= width {
                 selected.push(candidate);
                 used += candidate_width;
                 added = true;
             }
         }
-        if !added && active.saturating_add(distance) >= tabs.len() && distance > active {
+        if !added && active.saturating_add(distance) >= labels.len() && distance > active {
             break;
         }
         distance += 1;
@@ -250,12 +250,19 @@ pub(crate) fn horizontal_visible_indices(
 }
 
 pub(crate) fn tab_label(tab: &TabInfo) -> String {
-    let bell = if tab.has_bell_notification || tab.is_flashing_bell {
-        " ●"
-    } else {
-        ""
-    };
-    format!(" {} {}{} ", tab.position + 1, tab_name(tab), bell)
+    numbered_tab_label(
+        tab.position,
+        &tab_name(tab),
+        tab.has_bell_notification || tab.is_flashing_bell,
+    )
+}
+
+/// Tab entry for the bar. With spaces enabled the number is the tab's index
+/// inside its space, not its global position, because the numeric shortcuts
+/// then address spaces rather than tabs.
+pub(crate) fn numbered_tab_label(index: usize, name: &str, bell: bool) -> String {
+    let bell = if bell { " ●" } else { "" };
+    format!(" {} {}{} ", index + 1, name, bell)
 }
 
 pub(crate) fn tab_name(tab: &TabInfo) -> String {
@@ -358,6 +365,12 @@ pub(crate) fn permissions_for_view(view: View) -> &'static [PermissionType] {
             PermissionType::ReadCliPipes,
         ],
         View::Vertical => &[
+            PermissionType::ReadApplicationState,
+            PermissionType::ChangeApplicationState,
+            PermissionType::RunCommands,
+            PermissionType::ReadCliPipes,
+        ],
+        View::Tabs => &[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::RunCommands,
@@ -736,6 +749,18 @@ pub(crate) fn elapsed_label(seconds: u64) -> String {
 /// Spelling the units out is worth the room when there is room; a narrow
 /// sidebar falls back to the bare counts rather than truncating a word.
 pub(crate) fn tab_totals_label(tabs: usize, panes: usize, room: usize) -> String {
+    totals_label(tabs, "tab", panes, "pane", room)
+}
+
+/// Section totals such as "3 spaces · 5 tabs", shortened to bare numbers when
+/// the sidebar is narrow.
+pub(crate) fn totals_label(
+    count: usize,
+    noun: &str,
+    second: usize,
+    second_noun: &str,
+    room: usize,
+) -> String {
     let plural = |count: usize, noun: &str| {
         if count == 1 {
             format!("{count} {noun}")
@@ -743,21 +768,21 @@ pub(crate) fn tab_totals_label(tabs: usize, panes: usize, room: usize) -> String
             format!("{count} {noun}s")
         }
     };
-    // One pane per tab is the ordinary case, and repeating the same number
-    // twice says nothing, so the pane count only appears when it differs.
-    if tabs == panes {
-        let spelled = plural(tabs, "tab");
+    // Repeating the same number twice says nothing, so the second count only
+    // appears when it differs.
+    if count == second {
+        let spelled = plural(count, noun);
         return if cell_width(&spelled) <= room {
             spelled
         } else {
-            tabs.to_string()
+            count.to_string()
         };
     }
-    let spelled = format!("{} · {}", plural(tabs, "tab"), plural(panes, "pane"));
+    let spelled = format!("{} · {}", plural(count, noun), plural(second, second_noun));
     if cell_width(&spelled) <= room {
         return spelled;
     }
-    format!("{tabs} · {panes}")
+    format!("{count} · {second}")
 }
 
 /// The agent count reads as sessions, matching the tab header's spelled-out
@@ -836,6 +861,13 @@ pub(crate) fn unix_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+pub(crate) fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 pub(crate) fn printable_character(character: char) -> char {
