@@ -2196,3 +2196,29 @@ fn generated_space_names_can_be_turned_off() {
     state.render_vertical(&mut frame, 10, 40);
     assert!(frame.finish().contains("space-1"));
 }
+
+#[test]
+fn zellij_default_tab_names_count_as_generated() {
+    let mut state = space_state(vec![space_tab(0, 0, "Tab #1", true)]);
+    state.auto_tab_names = true;
+    state
+        .cwd_by_tab
+        .insert(0, PathBuf::from("/Users/x/Projects/notes"));
+    assert_eq!(state.tab_label_text(&state.tabs[0]), "notes");
+}
+
+#[test]
+fn the_default_space_is_shown_by_its_project_too() {
+    let mut state = space_state(vec![space_tab(0, 0, "Tab #1", true)]);
+    state.view = View::Vertical;
+    state.auto_space_names = true;
+    state
+        .cwd_by_tab
+        .insert(0, PathBuf::from("/Users/x/Projects/notes"));
+    let colors = Colors::default();
+    let mut frame = AnsiFrame::new(8, 40, &colors);
+    state.render_vertical(&mut frame, 8, 40);
+    let output = frame.finish();
+    assert!(output.contains("notes"), "got {output:?}");
+    assert!(!output.contains("1 main"), "the bucket name stays hidden");
+}

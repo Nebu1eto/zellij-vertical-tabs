@@ -541,10 +541,13 @@ impl State {
         space: &Space,
         current: Option<&spaces::SpaceTab>,
     ) -> String {
-        let generated = space
-            .name
-            .strip_prefix("space-")
-            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()));
+        // The default space is a bucket for tabs nobody named, so it carries no
+        // more meaning than a generated prefix does.
+        let generated = space.name == self.default_space()
+            || space
+                .name
+                .strip_prefix("space-")
+                .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()));
         if !generated || !self.auto_space_names {
             return space.name.clone();
         }
@@ -570,7 +573,13 @@ impl State {
     /// numbers, which say nothing on their own.
     pub(crate) fn tab_label_text(&self, tab: &TabInfo) -> String {
         let (_, label) = spaces::split_tab_name(&tab.name, self.separator(), self.default_space());
-        let generated = label.is_empty() || label.chars().all(|c| c.is_ascii_digit());
+        // Zellij itself names unnamed tabs "Tab #1", which says no more than the
+        // numbers this plugin generates.
+        let generated = label.is_empty()
+            || label.chars().all(|c| c.is_ascii_digit())
+            || label
+                .strip_prefix("Tab #")
+                .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()));
         if !generated || !self.auto_tab_names {
             return if label.is_empty() {
                 tab_name(tab)
