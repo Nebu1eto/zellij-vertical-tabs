@@ -74,6 +74,7 @@ pub(crate) struct State {
     pub(crate) spaces_enabled: bool,
     pub(crate) space_separator: String,
     pub(crate) default_space_name: String,
+    pub(crate) auto_tab_names: bool,
     pub(crate) zellij_pid: Option<u32>,
     pub(crate) last_focused_tab_by_space: HashMap<String, usize>,
     pub(crate) visible_vertical_spaces: Vec<(usize, usize)>,
@@ -171,6 +172,9 @@ impl ZellijPlugin for State {
             .filter(|value| !value.is_empty())
             .cloned()
             .unwrap_or_else(|| spaces::DEFAULT_SPACE_NAME.to_string());
+        self.auto_tab_names = configuration
+            .get("auto_tab_names")
+            .is_none_or(|value| value != "false");
         self.border_enabled = configuration
             .get("border_enabled")
             .is_none_or(|value| value != "false");
@@ -517,20 +521,45 @@ impl State {
             .enumerate()
             .map(|(slot, index)| {
                 let tab = &self.tabs[*index];
-                let (_, label) =
-                    spaces::split_tab_name(&tab.name, self.separator(), self.default_space());
-                let label = if label.is_empty() {
-                    tab_name(tab)
-                } else {
-                    label
-                };
                 numbered_tab_label(
                     slot,
-                    &label,
+                    &self.tab_label_text(tab),
                     tab.has_bell_notification || tab.is_flashing_bell,
                 )
             })
             .collect()
+    }
+
+    /// Name shown for a tab: what the user typed when they named it, otherwise
+    /// the repository or directory the tab sits in. Generated names are bare
+    /// numbers, which say nothing on their own.
+    pub(crate) fn tab_label_text(&self, tab: &TabInfo) -> String {
+        let (_, label) = spaces::split_tab_name(&tab.name, self.separator(), self.default_space());
+        let generated = label.is_empty() || label.chars().all(|c| c.is_ascii_digit());
+        if !generated || !self.auto_tab_names {
+            return if label.is_empty() {
+                tab_name(tab)
+            } else {
+                label
+            };
+        }
+        if let Some(repo) = self.repo_by_tab.get(&tab.position) {
+            return repo.repository.clone();
+        }
+        if let Some(base) = self
+            .cwd_by_tab
+            .get(&tab.position)
+            .and_then(|cwd| cwd.file_name())
+            .map(|base| base.to_string_lossy().into_owned())
+            .filter(|base| !base.is_empty())
+        {
+            return base;
+        }
+        if label.is_empty() {
+            tab_name(tab)
+        } else {
+            label
+        }
     }
 
     /// Tabs and spaces disappear; their remembered state must not outlive them.
@@ -1358,13 +1387,7 @@ impl State {
                 tab.position
             };
             let display_name = if self.spaces_enabled && self.mode != InputMode::RenameTab {
-                let (_, label) =
-                    spaces::split_tab_name(&tab.name, self.separator(), self.default_space());
-                if label.is_empty() {
-                    tab_display_name(tab, repo)
-                } else {
-                    label
-                }
+                self.tab_label_text(tab)
             } else {
                 tab_display_name(tab, repo)
             };

@@ -144,6 +144,7 @@ With `spaces` off, the same bindings keep their plain Zellij meaning: a new tab,
 | `spaces` | Group tabs into spaces; defaults to `"false"` |
 | `space_separator` | Separator between space and tab name; defaults to `"/"` |
 | `default_space_name` | Space for tabs without a separator; defaults to `"main"` |
+| `auto_tab_names` | Name generated tabs after their repository or directory; defaults to `"true"` |
 
 ### Tab bar
 
@@ -162,6 +163,8 @@ pane split_direction="horizontal" {
 ```
 
 The strip lists the active space's tabs from the left edge and puts a `+` button directly after the last tab; clicking a tab switches to it and clicking `+` adds a tab to the space. Set `show_tabs "false"` on the horizontal status bar so the tabs are not drawn twice.
+
+A tab you have not named shows the repository it sits in, or its directory, and follows the pane as you change directory. Naming a tab yourself always wins.
 
 ## Coding-agent status
 

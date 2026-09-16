@@ -2043,3 +2043,49 @@ fn a_full_strip_drops_the_button_instead_of_overlapping() {
         "no room left means no button rather than a clipped one"
     );
 }
+
+#[test]
+fn a_generated_tab_name_falls_back_to_the_repository_or_directory() {
+    let mut state = space_state(vec![
+        space_tab(0, 0, "work/1", true),
+        space_tab(1, 1, "work/2", false),
+        space_tab(2, 2, "work/api", false),
+    ]);
+    state.auto_tab_names = true;
+    state.repo_by_tab.insert(
+        0,
+        RepoInfo {
+            repository: "zellij-vertical-tabs".to_string(),
+            branch: "main".to_string(),
+            worktree: None,
+        },
+    );
+    state
+        .cwd_by_tab
+        .insert(1, PathBuf::from("/Users/x/Projects/notes"));
+
+    assert_eq!(state.tab_label_text(&state.tabs[0]), "zellij-vertical-tabs");
+    assert_eq!(state.tab_label_text(&state.tabs[1]), "notes");
+    assert_eq!(
+        state.tab_label_text(&state.tabs[2]),
+        "api",
+        "a name the user chose is never replaced"
+    );
+}
+
+#[test]
+fn auto_names_can_be_turned_off() {
+    let mut state = space_state(vec![space_tab(0, 0, "work/1", true)]);
+    state.auto_tab_names = false;
+    state
+        .cwd_by_tab
+        .insert(0, PathBuf::from("/Users/x/Projects/notes"));
+    assert_eq!(state.tab_label_text(&state.tabs[0]), "1");
+}
+
+#[test]
+fn a_tab_without_a_directory_keeps_its_number() {
+    let mut state = space_state(vec![space_tab(0, 0, "work/3", true)]);
+    state.auto_tab_names = true;
+    assert_eq!(state.tab_label_text(&state.tabs[0]), "3");
+}
