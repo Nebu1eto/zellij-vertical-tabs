@@ -176,3 +176,26 @@ fn a_damaged_claim_file_does_not_block_anything() {
     assert!(parse_claim("garbage").is_none());
     assert!(parse_claim("").is_none());
 }
+
+#[test]
+fn a_number_selects_that_tab_inside_the_space() {
+    let tabs = vec![
+        tab(0, 10, "work/api", true),
+        tab(1, 11, "docs/a", false),
+        tab(2, 12, "work/web", false),
+    ];
+    let spaces = group_spaces(&tabs, "/", "main");
+    let work = &spaces[0];
+    assert_eq!(resolve_tab_switch(work, 1), Some(10));
+    assert_eq!(
+        resolve_tab_switch(work, 2),
+        Some(12),
+        "numbering is per space"
+    );
+    assert_eq!(
+        resolve_tab_switch(work, 3),
+        None,
+        "a missing tab is not guessed"
+    );
+    assert_eq!(resolve_tab_switch(work, 0), None);
+}

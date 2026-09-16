@@ -114,6 +114,11 @@ pub(crate) fn resolve_space_switch(
         .map(|tab| tab.tab_id)
 }
 
+/// The index-th tab of a space (1-based), which is the number the strip shows.
+pub(crate) fn resolve_tab_switch(space: &Space, index: usize) -> Option<usize> {
+    space.tabs.get(index.checked_sub(1)?).map(|tab| tab.tab_id)
+}
+
 /// Neighbouring tab inside a space, wrapping at both ends.
 pub(crate) fn resolve_tab_cycle(
     space: &Space,

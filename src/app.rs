@@ -75,6 +75,7 @@ pub(crate) struct State {
     pub(crate) space_separator: String,
     pub(crate) default_space_name: String,
     pub(crate) auto_tab_names: bool,
+    pub(crate) auto_space_names: bool,
     pub(crate) zellij_pid: Option<u32>,
     pub(crate) last_focused_tab_by_space: HashMap<String, usize>,
     pub(crate) visible_vertical_spaces: Vec<(usize, usize)>,
@@ -174,6 +175,9 @@ impl ZellijPlugin for State {
             .unwrap_or_else(|| spaces::DEFAULT_SPACE_NAME.to_string());
         self.auto_tab_names = configuration
             .get("auto_tab_names")
+            .is_none_or(|value| value != "false");
+        self.auto_space_names = configuration
+            .get("auto_space_names")
             .is_none_or(|value| value != "false");
         self.border_enabled = configuration
             .get("border_enabled")
@@ -530,6 +534,37 @@ impl State {
             .collect()
     }
 
+    /// Name shown for a space: the prefix the user chose, or the project its
+    /// current tab sits in when the prefix was generated.
+    pub(crate) fn space_label_text(
+        &self,
+        space: &Space,
+        current: Option<&spaces::SpaceTab>,
+    ) -> String {
+        let generated = space
+            .name
+            .strip_prefix("space-")
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()));
+        if !generated || !self.auto_space_names {
+            return space.name.clone();
+        }
+        current
+            .and_then(|tab| self.project_name_for(tab.position))
+            .unwrap_or_else(|| space.name.clone())
+    }
+
+    /// Repository name of a tab, falling back to the directory it sits in.
+    pub(crate) fn project_name_for(&self, position: usize) -> Option<String> {
+        if let Some(repo) = self.repo_by_tab.get(&position) {
+            return Some(repo.repository.clone());
+        }
+        self.cwd_by_tab
+            .get(&position)
+            .and_then(|cwd| cwd.file_name())
+            .map(|base| base.to_string_lossy().into_owned())
+            .filter(|base| !base.is_empty())
+    }
+
     /// Name shown for a tab: what the user typed when they named it, otherwise
     /// the repository or directory the tab sits in. Generated names are bare
     /// numbers, which say nothing on their own.
@@ -543,17 +578,8 @@ impl State {
                 label
             };
         }
-        if let Some(repo) = self.repo_by_tab.get(&tab.position) {
-            return repo.repository.clone();
-        }
-        if let Some(base) = self
-            .cwd_by_tab
-            .get(&tab.position)
-            .and_then(|cwd| cwd.file_name())
-            .map(|base| base.to_string_lossy().into_owned())
-            .filter(|base| !base.is_empty())
-        {
-            return base;
+        if let Some(project) = self.project_name_for(tab.position) {
+            return project;
         }
         if label.is_empty() {
             tab_name(tab)
@@ -688,6 +714,16 @@ impl State {
                     }
                 }
             }
+            "tab-switch" => {
+                if let (Some(index), Some(space)) = (
+                    payload.and_then(|value| value.trim().parse::<usize>().ok()),
+                    active_index.and_then(|index| model.get(index)),
+                ) {
+                    if let Some(tab_id) = spaces::resolve_tab_switch(space, index) {
+                        self.focus_tab_id(tab_id);
+                    }
+                }
+            }
             "tab-next" | "tab-prev" => {
                 if let Some(space) = active_index.and_then(|index| model.get(index)) {
                     if let Some(tab_id) = spaces::resolve_tab_cycle(
@@ -770,7 +806,7 @@ impl State {
             "space-new" | "tab-new" => {
                 new_tab(None::<String>, None::<String>);
             }
-            "space-switch" => {
+            "space-switch" | "tab-switch" => {
                 if let Some(index) = payload.and_then(|value| value.trim().parse::<u32>().ok()) {
                     switch_tab_to(index);
                 }
@@ -1197,17 +1233,27 @@ impl State {
         }
 
         let agents = self.agent_statuses.len();
-        // Agents are why this sidebar exists, so they claim their rows first and
-        // tabs fill the rest, always including the active tab.
-        let agent_budget = if agents == 0 {
-            0
-        } else {
-            (2 + agents * 2).min((rows * 3 / 5).max(4))
-        };
         let model = if self.spaces_enabled {
             self.space_model()
         } else {
             Vec::new()
+        };
+        let listed = if model.is_empty() {
+            self.visible_tab_indices().len()
+        } else {
+            model.len()
+        };
+        // The two sections share the sidebar evenly, but a section that needs
+        // less than its half leaves the rest to the other one rather than
+        // holding empty rows.
+        let half = rows / 2;
+        let agent_budget = if agents == 0 {
+            0
+        } else {
+            let agents_need = 2 + agents * 2;
+            let listed_need = 1 + listed * 2;
+            let spare = half.saturating_sub(listed_need);
+            agents_need.min(half + spare).max(3.min(rows))
         };
         let budget = rows.saturating_sub(agent_budget);
         // With spaces on, the sidebar lists spaces in the card the tabs used to
@@ -1286,7 +1332,11 @@ impl State {
                 })
                 .or_else(|| space.tabs.first());
             let title = fit_line(
-                &format!("{marker}{} {}", index + 1, space.name),
+                &format!(
+                    "{marker}{} {}",
+                    index + 1,
+                    self.space_label_text(space, current)
+                ),
                 content_cols,
             );
             let repo = current.and_then(|tab| self.repo_by_tab.get(&tab.position));

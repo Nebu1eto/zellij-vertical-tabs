@@ -123,6 +123,7 @@ keybinds {
         bind "Super 1" { MessagePlugin { name "vtabs:space-switch"; payload "1"; }; }
         bind "Super 2" { MessagePlugin { name "vtabs:space-switch"; payload "2"; }; }
         bind "Super Alt Right" { MessagePlugin { name "vtabs:tab-next"; }; }
+        bind "Alt 1" { MessagePlugin { name "vtabs:tab-switch"; payload "1"; }; }
         bind "Super Alt Left" { MessagePlugin { name "vtabs:tab-prev"; }; }
     }
 }
@@ -135,6 +136,7 @@ Write `MessagePlugin` without a plugin URL. With a URL, Zellij matches the runni
 | `vtabs:space-new` | New space with its first tab |
 | `vtabs:tab-new` | New tab in the active space |
 | `vtabs:space-switch` | Switch to the space in `payload`, on the tab it was last left on |
+| `vtabs:tab-switch` | Switch to the tab numbered in `payload` inside the active space |
 | `vtabs:tab-next`, `vtabs:tab-prev` | Cycle tabs inside the active space |
 
 With `spaces` off, the same bindings keep their plain Zellij meaning: a new tab, a tab by index, and the next or previous tab.
@@ -145,6 +147,7 @@ With `spaces` off, the same bindings keep their plain Zellij meaning: a new tab,
 | `space_separator` | Separator between space and tab name; defaults to `"/"` |
 | `default_space_name` | Space for tabs without a separator; defaults to `"main"` |
 | `auto_tab_names` | Name generated tabs after their repository or directory; defaults to `"true"` |
+| `auto_space_names` | Show a generated space under its project name; defaults to `"true"` |
 
 ### Tab bar
 

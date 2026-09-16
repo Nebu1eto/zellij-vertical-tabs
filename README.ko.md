@@ -123,6 +123,7 @@ keybinds {
         bind "Super 1" { MessagePlugin { name "vtabs:space-switch"; payload "1"; }; }
         bind "Super 2" { MessagePlugin { name "vtabs:space-switch"; payload "2"; }; }
         bind "Super Alt Right" { MessagePlugin { name "vtabs:tab-next"; }; }
+        bind "Alt 1" { MessagePlugin { name "vtabs:tab-switch"; payload "1"; }; }
         bind "Super Alt Left" { MessagePlugin { name "vtabs:tab-prev"; }; }
     }
 }
@@ -135,6 +136,7 @@ keybinds {
 | `vtabs:space-new` | 첫 탭과 함께 새 스페이스 생성 |
 | `vtabs:tab-new` | 활성 스페이스에 새 탭 생성 |
 | `vtabs:space-switch` | `payload` 번째 스페이스로, 마지막에 머문 탭으로 이동 |
+| `vtabs:tab-switch` | 활성 스페이스 안에서 `payload` 번째 탭으로 이동 |
 | `vtabs:tab-next`, `vtabs:tab-prev` | 활성 스페이스 안에서 탭 순환 |
 
 `spaces`가 꺼져 있으면 같은 바인딩이 본래 Zellij 동작대로 새 탭, 번호로 탭 이동, 다음/이전 탭으로 작동합니다.
@@ -145,6 +147,7 @@ keybinds {
 | `space_separator` | 스페이스와 탭 이름 구분자, 기본값 `"/"` |
 | `default_space_name` | 구분자가 없는 탭이 속할 스페이스, 기본값 `"main"` |
 | `auto_tab_names` | 자동 생성된 탭을 저장소나 디렉터리 이름으로 표시, 기본값 `"true"` |
+| `auto_space_names` | 자동 생성된 스페이스를 프로젝트 이름으로 표시, 기본값 `"true"` |
 
 ### 탭 바
 

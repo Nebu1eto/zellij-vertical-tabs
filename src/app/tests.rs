@@ -2089,3 +2089,110 @@ fn a_tab_without_a_directory_keeps_its_number() {
     state.auto_tab_names = true;
     assert_eq!(state.tab_label_text(&state.tabs[0]), "3");
 }
+
+fn sidebar_agent(pane_id: u32) -> AgentStatus {
+    AgentStatus {
+        pane_id,
+        source: "choco-pi".to_string(),
+        state: AgentState::Working,
+        detail: None,
+        summary: None,
+        since: 0,
+        sequence: 0,
+        expires_at: None,
+        updated_at: 0,
+        detected: false,
+        clear_on_focus: false,
+    }
+}
+
+#[test]
+fn the_sidebar_splits_evenly_when_both_sections_are_full() {
+    let mut state = space_state(
+        (0..8)
+            .map(|index| space_tab(index, index, &format!("s{index}/1"), index == 0))
+            .collect(),
+    );
+    state.view = View::Vertical;
+    for index in 0..8 {
+        state
+            .agent_statuses
+            .insert(index as u32, sidebar_agent(index as u32));
+    }
+    let colors = Colors::default();
+    let mut frame = AnsiFrame::new(20, 30, &colors);
+    state.render_vertical(&mut frame, 20, 30);
+
+    let spaces_rows = state.visible_vertical_spaces.len();
+    assert!(
+        (8..=10).contains(&spaces_rows),
+        "spaces keep about half the sidebar, got {spaces_rows}"
+    );
+    let agent_rows = state.agent_focus_targets.len();
+    assert!(agent_rows > 0, "agents keep their half too");
+}
+
+#[test]
+fn a_short_section_leaves_its_rows_to_the_other() {
+    let mut state = space_state(
+        (0..8)
+            .map(|index| space_tab(index, index, &format!("s{index}/1"), index == 0))
+            .collect(),
+    );
+    state.view = View::Vertical;
+    state.agent_statuses.insert(1, sidebar_agent(1));
+    let colors = Colors::default();
+    let mut frame = AnsiFrame::new(20, 30, &colors);
+    state.render_vertical(&mut frame, 20, 30);
+
+    assert!(
+        state.visible_vertical_spaces.len() > 10,
+        "one agent does not reserve half the sidebar"
+    );
+}
+
+#[test]
+fn a_generated_space_is_shown_by_its_project() {
+    let mut state = space_state(vec![
+        space_tab(0, 0, "space-1/1", true),
+        space_tab(1, 1, "api/server", false),
+    ]);
+    state.view = View::Vertical;
+    state.auto_space_names = true;
+    state.repo_by_tab.insert(
+        0,
+        RepoInfo {
+            repository: "zellij-vertical-tabs".to_string(),
+            branch: "main".to_string(),
+            worktree: None,
+        },
+    );
+    let colors = Colors::default();
+    let mut frame = AnsiFrame::new(10, 40, &colors);
+    state.render_vertical(&mut frame, 10, 40);
+    let output = frame.finish();
+
+    assert!(
+        output.contains("zellij-vertical-tabs"),
+        "a generated space shows its project, got {output:?}"
+    );
+    assert!(
+        !output.contains("space-1"),
+        "the generated prefix stays out of sight"
+    );
+    assert!(output.contains("api"), "a named space keeps its name");
+}
+
+#[test]
+fn generated_space_names_can_be_turned_off() {
+    let mut state = space_state(vec![space_tab(0, 0, "space-1/1", true)]);
+    state.view = View::Vertical;
+    state.auto_space_names = false;
+    state
+        .cwd_by_tab
+        .insert(0, PathBuf::from("/Users/x/Projects/notes"));
+    let colors = Colors::default();
+    let mut frame = AnsiFrame::new(10, 40, &colors);
+    state.render_vertical(&mut frame, 10, 40);
+    assert!(frame.finish().contains("space-1"));
+}
