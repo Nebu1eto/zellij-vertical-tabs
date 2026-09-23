@@ -165,7 +165,7 @@ pane split_direction="horizontal" {
 }
 ```
 
-The strip lists the active space's tabs from the left edge and puts a `+` button directly after the last tab; clicking a tab switches to it and clicking `+` adds a tab to the space. Set `show_tabs "false"` on the horizontal status bar so the tabs are not drawn twice.
+The strip lists the active space's tabs from the left edge and puts a `+` button directly after the last tab; clicking a tab switches to it and clicking `+` adds a tab to the space. Each tab carries a `×` button that closes it, except when it is the session's only tab. Set `show_tabs "false"` on the horizontal status bar so the tabs are not drawn twice.
 
 A tab you have not named shows the repository it sits in, or its directory, and follows the pane as you change directory. Naming a tab yourself always wins.
 
@@ -177,7 +177,9 @@ The plugin detects supported terminal agent processes without hooks. Hooks add l
 zellij pipe --name coding-agent-status -- "$payload"
 ```
 
-The JSON may identify the pane, event, tool, task summary, source agent, and timestamp. Hook events from choco-pi, Claude Code, and Codex update the matching pane's status.
+The JSON may identify the pane, event, tool, task summary, source agent, session name, and timestamp. Hook events from choco-pi, Claude Code, and Codex update the matching pane's status.
+
+Each agent card starts with the pane's location. With spaces on it reads `space·tab·pane`, where the tab number is the tab's number inside its space; otherwise it reads `tab·pane`. A choco-pi card shows the session name from the payload's `session_name`, or from Pi's `π - <session> - <directory>` terminal title, before falling back to the task summary.
 
 ## Build
 

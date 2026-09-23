@@ -50,6 +50,7 @@ fn a_failed_turn_leaves_the_agent_idle_rather_than_failed() {
         event: "StopFailure".to_string(),
         tool: None,
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(9),
     }));
@@ -66,6 +67,7 @@ fn a_failed_turn_leaves_the_agent_idle_rather_than_failed() {
         event: "SessionEnd".to_string(),
         tool: None,
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(10),
     }));
@@ -98,6 +100,7 @@ fn events_map_onto_the_shared_state_vocabulary() {
             event: event.to_string(),
             tool: tool.map(str::to_string),
             summary: None,
+            session_name: None,
             pane_id: 7,
             timestamp: Some(1),
         }));
@@ -116,6 +119,7 @@ fn multiple_agent_sessions_are_tracked_per_pane() {
         event: "PreToolUse".to_string(),
         tool: Some("Bash".to_string()),
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -124,6 +128,7 @@ fn multiple_agent_sessions_are_tracked_per_pane() {
         event: "Notification".to_string(),
         tool: Some("Claude needs your permission to use Edit".to_string()),
         summary: None,
+        session_name: None,
         pane_id: 12,
         timestamp: Some(2),
     }));
@@ -145,6 +150,7 @@ fn multiple_agent_sessions_are_tracked_per_pane() {
         event: "SessionEnd".to_string(),
         tool: None,
         summary: None,
+        session_name: None,
         pane_id: 12,
         timestamp: Some(3),
     }));
@@ -165,6 +171,7 @@ fn agent_cards_carry_location_session_agent_and_state() {
         event: "PreToolUse".to_string(),
         tool: Some("Exec".to_string()),
         summary: Some("fix coding agent integration".to_string()),
+        session_name: None,
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -173,6 +180,7 @@ fn agent_cards_carry_location_session_agent_and_state() {
         event: "PermissionRequest".to_string(),
         tool: Some("Bash".to_string()),
         summary: None,
+        session_name: None,
         pane_id: 8,
         timestamp: Some(2),
     }));
@@ -181,6 +189,7 @@ fn agent_cards_carry_location_session_agent_and_state() {
         event: "Stop".to_string(),
         tool: None,
         summary: None,
+        session_name: None,
         pane_id: 12,
         timestamp: Some(3),
     }));
@@ -214,6 +223,7 @@ fn summary_survives_later_events_and_state_keeps_its_clock() {
         event: "UserPromptSubmit".to_string(),
         tool: None,
         summary: Some("fix the sidebar".to_string()),
+        session_name: None,
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -225,6 +235,7 @@ fn summary_survives_later_events_and_state_keeps_its_clock() {
         event: "UserPromptSubmit".to_string(),
         tool: None,
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(2),
     }));
@@ -241,6 +252,7 @@ fn summary_survives_later_events_and_state_keeps_its_clock() {
         event: "PreToolUse".to_string(),
         tool: Some("Exec".to_string()),
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(3),
     }));
@@ -370,6 +382,7 @@ fn the_section_names_are_bold_and_their_totals_are_not() {
         event: "PreToolUse".to_string(),
         tool: Some("exec".to_string()),
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -439,6 +452,7 @@ fn an_idle_state_stays_legible_on_a_focused_card() {
         event: "SessionStart".to_string(),
         tool: None,
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -483,6 +497,7 @@ fn a_focused_agent_card_is_highlighted_across_its_whole_width() {
         event: "PreToolUse".to_string(),
         tool: Some("exec".to_string()),
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -553,6 +568,7 @@ fn the_focused_panes_agent_card_is_marked_like_the_active_tab() {
             event: "PreToolUse".to_string(),
             tool: Some("exec".to_string()),
             summary: None,
+            session_name: None,
             pane_id,
             timestamp: Some(1),
         }));
@@ -608,6 +624,7 @@ fn vertical_sidebar_renders_tab_and_agent_sections() {
         event: "PermissionRequest".to_string(),
         tool: Some("Bash".to_string()),
         summary: Some("fix the sidebar".to_string()),
+        session_name: None,
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -757,6 +774,7 @@ fn an_active_agent_stays_active_while_the_model_is_quiet() {
         event: "UserPromptSubmit".to_string(),
         tool: None,
         summary: Some("fix the sidebar".to_string()),
+        session_name: None,
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -794,6 +812,7 @@ fn an_agent_card_keeps_its_session_name_while_tools_change() {
         event: "PreToolUse".to_string(),
         tool: Some("read_symbol".to_string()),
         summary: Some("ship the sidebar".to_string()),
+        session_name: None,
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -808,6 +827,7 @@ fn an_agent_card_keeps_its_session_name_while_tools_change() {
         event: "Stop".to_string(),
         tool: None,
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(2),
     }));
@@ -852,6 +872,7 @@ fn a_new_sidebar_adopts_the_statuses_its_siblings_already_have() {
         event: "PreToolUse".to_string(),
         tool: Some("exec".to_string()),
         summary: Some("fix the sidebar".to_string()),
+        session_name: None,
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -890,6 +911,7 @@ fn a_sidebar_keeps_its_own_newer_status_and_skips_departed_panes() {
         event: "PermissionRequest".to_string(),
         tool: Some("Bash".to_string()),
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(2),
     }));
@@ -902,6 +924,7 @@ fn a_sidebar_keeps_its_own_newer_status_and_skips_departed_panes() {
             state: AgentState::Idle,
             detail: None,
             summary: None,
+            session_name: None,
             since: 0,
             sequence: 0,
             expires_at: None,
@@ -915,6 +938,7 @@ fn a_sidebar_keeps_its_own_newer_status_and_skips_departed_panes() {
             state: AgentState::Working,
             detail: None,
             summary: None,
+            session_name: None,
             since: 0,
             sequence: 0,
             expires_at: None,
@@ -945,6 +969,7 @@ fn a_finished_agent_waiting_for_input_is_done_not_blocked() {
         event: "Notification".to_string(),
         tool: Some("Claude is waiting for your input".to_string()),
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -958,6 +983,7 @@ fn a_finished_agent_waiting_for_input_is_done_not_blocked() {
         event: "Notification".to_string(),
         tool: Some("Claude needs your permission to use Bash".to_string()),
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(2),
     }));
@@ -977,6 +1003,7 @@ fn compaction_events_show_a_compacting_state() {
         event: "PreCompact".to_string(),
         tool: Some("auto".to_string()),
         summary: Some("rebuild the sidebar".to_string()),
+        session_name: None,
         pane_id: 3,
         timestamp: Some(1),
     }));
@@ -998,6 +1025,7 @@ fn compaction_events_show_a_compacting_state() {
         event: "PostCompact".to_string(),
         tool: Some("auto".to_string()),
         summary: None,
+        session_name: None,
         pane_id: 3,
         timestamp: Some(2),
     }));
@@ -1026,6 +1054,7 @@ fn quiet_agents_stay_listed_as_idle_until_their_pane_closes() {
         event: "PreToolUse".to_string(),
         tool: Some("Exec".to_string()),
         summary: Some("fix the sidebar".to_string()),
+        session_name: None,
         pane_id: 7,
         timestamp: Some(1),
     }));
@@ -1074,6 +1103,7 @@ fn session_end_tombstone_rejects_delayed_events() {
         event: "PreToolUse".to_string(),
         tool: None,
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(200),
     }));
@@ -1083,6 +1113,7 @@ fn session_end_tombstone_rejects_delayed_events() {
         event: "SessionEnd".to_string(),
         tool: None,
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(300),
     }));
@@ -1094,6 +1125,7 @@ fn session_end_tombstone_rejects_delayed_events() {
         event: "PreToolUse".to_string(),
         tool: None,
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(300),
     }));
@@ -1105,6 +1137,7 @@ fn session_end_tombstone_rejects_delayed_events() {
         event: "SessionStart".to_string(),
         tool: None,
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(300),
     }));
@@ -1116,6 +1149,7 @@ fn session_end_tombstone_rejects_delayed_events() {
         event: "PostToolUse".to_string(),
         tool: None,
         summary: None,
+        session_name: None,
         pane_id: 7,
         timestamp: Some(301),
     }));
@@ -2018,12 +2052,184 @@ fn the_tab_strip_is_left_aligned_with_the_button_after_the_tabs() {
     let first = state.visible_horizontal_tabs.first().expect("a tab hitbox");
     assert_eq!(first.start, 0, "tabs are left aligned");
     assert_eq!(first.position, 0);
-    let last = state.visible_horizontal_tabs.last().expect("a tab hitbox");
+    let last_close = state.close_hitboxes.last().expect("a close button");
     assert_eq!(
         state.plus_hitbox,
-        Some((last.end, last.end + 3)),
+        Some((last_close.1, last_close.1 + 3)),
         "the button follows the last tab"
     );
+}
+
+#[test]
+fn every_strip_tab_has_a_close_button_that_names_its_tab() {
+    let mut state = space_state(vec![
+        space_tab(0, 10, "work/api", true),
+        space_tab(1, 11, "docs/readme", false),
+        space_tab(2, 12, "work/web", false),
+    ]);
+    state.view = View::Tabs;
+    let colors = Colors::default();
+    let mut frame = AnsiFrame::new(1, 40, &colors);
+    state.render_space_tabs(&mut frame, 1, 40);
+    let output = frame.finish();
+
+    assert_eq!(output.matches('×').count(), 2, "got {output:?}");
+    let tabs = &state.visible_horizontal_tabs;
+    let closes = &state.close_hitboxes;
+    assert_eq!(closes.len(), 2, "one button per visible tab");
+    for (tab, close) in tabs.iter().zip(closes) {
+        assert_eq!(close.0, tab.end, "the button sits right after its tab");
+    }
+    assert_eq!(
+        closes.iter().map(|close| close.2).collect::<Vec<_>>(),
+        vec![10, 12],
+        "a button closes by tab id, since positions shift as tabs close"
+    );
+}
+
+#[test]
+fn the_sessions_only_tab_has_no_close_button() {
+    let mut state = space_state(vec![space_tab(0, 0, "work/api", true)]);
+    state.view = View::Tabs;
+    let colors = Colors::default();
+    let mut frame = AnsiFrame::new(1, 40, &colors);
+    state.render_space_tabs(&mut frame, 1, 40);
+    assert!(
+        state.close_hitboxes.is_empty(),
+        "closing the last tab would end the session"
+    );
+    assert!(!frame.finish().contains('×'));
+}
+
+fn agent_event(
+    source: &str,
+    pane_id: u32,
+    summary: Option<&str>,
+    session: Option<&str>,
+) -> AgentEvent {
+    AgentEvent {
+        source: source.to_string(),
+        event: "UserPromptSubmit".to_string(),
+        tool: None,
+        summary: summary.map(str::to_string),
+        session_name: session.map(str::to_string),
+        pane_id,
+        timestamp: Some(1),
+    }
+}
+
+#[test]
+fn agent_locations_count_space_then_tab_inside_it_then_pane() {
+    let mut state = space_state(vec![
+        space_tab(0, 0, "work/api", true),
+        space_tab(1, 1, "docs/readme", false),
+        space_tab(2, 2, "work/web", false),
+    ]);
+    let pane = |id| PaneInfo {
+        id,
+        ..PaneInfo::default()
+    };
+    state.panes.panes.insert(0, vec![pane(1)]);
+    state.panes.panes.insert(1, vec![pane(2)]);
+    state.panes.panes.insert(2, vec![pane(3), pane(4)]);
+    for pane_id in [2, 4] {
+        assert!(state.apply_agent_event(agent_event("Codex", pane_id, Some("task"), None)));
+    }
+
+    let names: Vec<String> = state
+        .agent_entries()
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+    assert_eq!(
+        names,
+        vec!["1·2·2 task", "2·1·1 task"],
+        "the work space's second tab is its own tab 2, ahead of the docs space"
+    );
+    let status = state.agent_statuses.get(&4).unwrap();
+    assert!(state.agent_entry_message(status).starts_with("[1·2·2] "));
+}
+
+#[test]
+fn a_choco_pi_card_prefers_its_session_name() {
+    let mut state = State::default();
+    state.panes.panes.insert(
+        0,
+        vec![
+            PaneInfo {
+                id: 7,
+                title: "π fix the sidebar".to_string(),
+                ..PaneInfo::default()
+            },
+            PaneInfo {
+                id: 8,
+                title: "π - Sidebar polish - zellij-vertical-tabs".to_string(),
+                ..PaneInfo::default()
+            },
+            PaneInfo {
+                id: 9,
+                title: "π - Sidebar polish - zellij-vertical-tabs".to_string(),
+                ..PaneInfo::default()
+            },
+        ],
+    );
+    assert!(state.apply_agent_event(agent_event(
+        "choco-pi",
+        7,
+        Some("fix the sidebar"),
+        Some("Agent labels")
+    )));
+    // Later events without a name keep the one already reported.
+    assert!(state.apply_agent_event(agent_event("choco-pi", 7, Some("next"), None)));
+    // Without a reported name, Pi's own terminal title carries it.
+    assert!(state.apply_agent_event(agent_event("choco-pi", 8, Some("fix the sidebar"), None)));
+    // Other agents have no session name and keep showing the task.
+    assert!(state.apply_agent_event(agent_event("Codex", 9, Some("fix the sidebar"), None)));
+
+    let names: Vec<String> = state
+        .agent_entries()
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "1·1 Agent labels",
+            "1·2 Sidebar polish",
+            "1·3 fix the sidebar"
+        ]
+    );
+
+    // Sidebars in other tabs receive the name through the shared file.
+    let payload = encode_agent_statuses(&state.agent_statuses);
+    let shared = decode_agent_statuses(&payload);
+    let seven = shared.iter().find(|status| status.pane_id == 7).unwrap();
+    assert_eq!(seven.session_name.as_deref(), Some("Agent labels"));
+}
+
+#[test]
+fn a_pi_title_names_a_session_only_in_its_three_part_form() {
+    assert_eq!(
+        pi_session_name_from_title("π - Fix - the bar - repo").as_deref(),
+        Some("Fix - the bar")
+    );
+    assert_eq!(pi_session_name_from_title("π - repo"), None);
+    assert_eq!(pi_session_name_from_title("π fix the bar"), None);
+    assert_eq!(pi_session_name_from_title("zsh"), None);
+}
+
+#[test]
+fn a_hook_payload_carries_the_session_name() {
+    let event = parse_agent_event(
+        r#"{"source_agent":"choco-pi","hook_event":"Stop","pane_id":7,"session_name":"  Agent labels  "}"#,
+    )
+    .unwrap();
+    assert_eq!(event.session_name.as_deref(), Some("Agent labels"));
+    let event = parse_agent_event(
+        r#"{"source_agent":"choco-pi","hook_event":"Stop","pane_id":7,"session_name":""}"#,
+    )
+    .unwrap();
+    assert_eq!(event.session_name, None);
 }
 
 #[test]
@@ -2097,6 +2303,7 @@ fn sidebar_agent(pane_id: u32) -> AgentStatus {
         state: AgentState::Working,
         detail: None,
         summary: None,
+        session_name: None,
         since: 0,
         sequence: 0,
         expires_at: None,

@@ -265,6 +265,14 @@ pub(crate) fn numbered_tab_label(index: usize, name: &str, bell: bool) -> String
     format!(" {} {}{} ", index + 1, name, bell)
 }
 
+/// One-based `space·tab·pane`, or `tab·pane` when spaces are off.
+pub(crate) fn address_label((space, tab, pane): (Option<usize>, usize, usize)) -> String {
+    match space {
+        Some(space) => format!("{}·{}·{}", space + 1, tab + 1, pane + 1),
+        None => format!("{}·{}", tab + 1, pane + 1),
+    }
+}
+
 pub(crate) fn tab_name(tab: &TabInfo) -> String {
     if tab.name.is_empty() {
         format!("Tab {}", tab.position + 1)

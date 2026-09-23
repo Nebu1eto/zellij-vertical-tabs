@@ -81,6 +81,8 @@ pub(crate) struct State {
     pub(crate) visible_vertical_spaces: Vec<(usize, usize)>,
     /// Columns of the new-tab button on the tab strip.
     pub(crate) plus_hitbox: Option<(usize, usize)>,
+    /// Columns of each tab's close button on the tab strip, with its tab id.
+    pub(crate) close_hitboxes: Vec<(usize, usize, usize)>,
     pub(crate) border_enabled: bool,
     pub(crate) border_char: String,
     pub(crate) vertical_separator_enabled: bool,
@@ -408,7 +410,15 @@ impl ZellijPlugin for State {
                         let plus = self
                             .plus_hitbox
                             .is_some_and(|(start, end)| column >= start && column < end);
-                        if plus {
+                        let close = self
+                            .close_hitboxes
+                            .iter()
+                            .find(|(start, end, _)| column >= *start && column < *end)
+                            .map(|(_, _, tab_id)| *tab_id);
+                        if let Some(tab_id) = close {
+                            // An id, not a position: positions shift as tabs close.
+                            close_tab_with_id(tab_id as u64);
+                        } else if plus {
                             self.create_tab_in_active_space();
                         } else if let Some(hitbox) = self
                             .visible_horizontal_tabs
@@ -1146,10 +1156,12 @@ impl State {
         }
     }
 
-    /// The space's tab strip: tabs from the left edge with the new-tab button
-    /// directly after the last one, all on a single line.
+    /// The space's tab strip: tabs from the left edge, each with a close
+    /// button, and the new-tab button directly after the last one, all on a
+    /// single line.
     pub(crate) fn render_space_tabs(&mut self, frame: &mut AnsiFrame, rows: usize, cols: usize) {
         self.visible_horizontal_tabs.clear();
+        self.close_hitboxes.clear();
         self.plus_hitbox = None;
         let background = Style {
             fg: self.colors.tab_normal.fg,
@@ -1165,6 +1177,14 @@ impl State {
 
         let plus = " + ";
         let plus_width = cell_width(plus);
+        let close = "× ";
+        // Closing the session's last tab would end the session, which is too
+        // much for a stray click.
+        let close_width = if self.tabs.len() > 1 {
+            cell_width(close)
+        } else {
+            0
+        };
         // The button trails the tabs, so it only takes the room they leave.
         let room = cols;
         let view = self.visible_tab_indices();
@@ -1174,7 +1194,7 @@ impl State {
             if x >= room {
                 break;
             }
-            let rendered = truncate_line(label, (room - x).min(24));
+            let rendered = truncate_line(label, ((room - x).min(24)).saturating_sub(close_width));
             let rendered_width = cell_width(&rendered);
             if rendered_width == 0 {
                 break;
@@ -1192,6 +1212,11 @@ impl State {
                 position: tab.position,
             });
             x += rendered_width;
+            if close_width > 0 {
+                frame.put(x, 0, style, close);
+                self.close_hitboxes.push((x, x + close_width, tab.tab_id));
+                x += close_width;
+            }
         }
 
         if cols.saturating_sub(x) >= plus_width {
@@ -1605,19 +1630,16 @@ impl State {
         y
     }
 
-    /// One presentable card per tracked agent, ordered by tab then pane.
+    /// One presentable card per tracked agent, ordered by where its pane sits.
     pub(crate) fn agent_entries(&self) -> Vec<AgentEntry> {
         let now = unix_seconds();
+        let model = self.address_model();
         self.sorted_agent_statuses()
             .into_iter()
             .map(|status| {
-                let session_name = status
-                    .summary
-                    .clone()
-                    .or_else(|| self.agent_title_suffix(status.pane_id))
-                    .unwrap_or_else(|| status.source.clone());
-                let name = match self.pane_location(status.pane_id) {
-                    Some((tab, pane)) => format!("{}·{} {session_name}", tab + 1, pane + 1),
+                let session_name = self.agent_session_label(status);
+                let name = match self.pane_address(model.as_deref(), status.pane_id) {
+                    Some(address) => format!("{} {session_name}", address_label(address)),
                     None => session_name,
                 };
                 let elapsed = elapsed_label(now.saturating_sub(status.since));
@@ -1630,6 +1652,63 @@ impl State {
                 }
             })
             .collect()
+    }
+
+    /// A choco-pi session is known by its name, which outlives any one prompt;
+    /// other agents have no name, so their card shows the task instead.
+    pub(crate) fn agent_session_label(&self, status: &AgentStatus) -> String {
+        let pi_session = || {
+            if !status.source.eq_ignore_ascii_case("choco-pi") {
+                return None;
+            }
+            status.session_name.clone().or_else(|| {
+                self.terminal_pane_title(status.pane_id)
+                    .and_then(pi_session_name_from_title)
+            })
+        };
+        pi_session()
+            .or_else(|| status.summary.clone())
+            .or_else(|| self.agent_title_suffix(status.pane_id))
+            .unwrap_or_else(|| status.source.clone())
+    }
+
+    pub(crate) fn terminal_pane_title(&self, pane_id: u32) -> Option<&str> {
+        self.panes
+            .panes
+            .values()
+            .flatten()
+            .find(|pane| pane.id == pane_id && !pane.is_plugin)
+            .map(|pane| pane.title.as_str())
+    }
+
+    /// The space grouping used to number agent locations, or none when spaces
+    /// are off and a tab's global position is its number.
+    pub(crate) fn address_model(&self) -> Option<Vec<Space>> {
+        self.spaces_enabled.then(|| self.space_model())
+    }
+
+    /// Where a pane sits, numbered the way the sidebar and tab strip number it:
+    /// the space, the tab inside that space, then the pane inside the tab.
+    /// All zero-based; the space is absent when spaces are off.
+    pub(crate) fn pane_address(
+        &self,
+        model: Option<&[Space]>,
+        pane_id: u32,
+    ) -> Option<(Option<usize>, usize, usize)> {
+        let (tab_position, pane_index) = self.pane_location(pane_id)?;
+        let in_space = model.and_then(|model| {
+            model.iter().enumerate().find_map(|(space_index, space)| {
+                space
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.position == tab_position)
+                    .map(|slot| (space_index, slot))
+            })
+        });
+        Some(match in_space {
+            Some((space_index, slot)) => (Some(space_index), slot, pane_index),
+            None => (None, tab_position, pane_index),
+        })
     }
 
     pub(crate) fn state_accent(&self, state: AgentState) -> Rgb {
@@ -1729,6 +1808,9 @@ impl State {
         let summary = event
             .summary
             .or_else(|| previous.and_then(|status| status.summary.clone()));
+        let session_name = event
+            .session_name
+            .or_else(|| previous.and_then(|status| status.session_name.clone()));
         // Keep the clock running while an agent stays in the same state, so the
         // sidebar can show how long it has been blocked or working.
         let since = previous
@@ -1742,6 +1824,7 @@ impl State {
                 state,
                 detail,
                 summary,
+                session_name,
                 since,
                 sequence: self.agent_sequence,
                 expires_at: lifetime.map(|seconds| unix_seconds().saturating_add(seconds)),
@@ -1843,28 +1926,21 @@ impl State {
     }
 
     pub(crate) fn sorted_agent_statuses(&self) -> Vec<&AgentStatus> {
+        let model = self.address_model();
         let mut statuses: Vec<&AgentStatus> = self.agent_statuses.values().collect();
-        statuses.sort_by_key(|status| {
-            let location = || self.pane_location(status.pane_id);
-            (
-                location().map_or(usize::MAX, |(tab, _)| tab),
-                location().map_or(usize::MAX, |(_, pane)| pane),
-                std::cmp::Reverse(status.sequence),
-            )
+        statuses.sort_by_cached_key(|status| {
+            let address = self.pane_address(model.as_deref(), status.pane_id).map_or(
+                (usize::MAX, usize::MAX, usize::MAX),
+                |(space, tab, pane)| (space.unwrap_or(0), tab, pane),
+            );
+            (address, std::cmp::Reverse(status.sequence))
         });
         statuses
     }
 
     pub(crate) fn agent_entry_message(&self, status: &AgentStatus) -> String {
-        match self.pane_location(status.pane_id) {
-            Some((tab_position, pane_index)) => {
-                format!(
-                    "[{}·{}] {}",
-                    tab_position + 1,
-                    pane_index + 1,
-                    status.message()
-                )
-            }
+        match self.pane_address(self.address_model().as_deref(), status.pane_id) {
+            Some(address) => format!("[{}] {}", address_label(address), status.message()),
             None => status.message(),
         }
     }
@@ -2050,6 +2126,7 @@ impl State {
                         state: AgentState::Idle,
                         detail: None,
                         summary: None,
+                        session_name: None,
                         since: unix_seconds(),
                         sequence: self.agent_sequence,
                         expires_at: None,

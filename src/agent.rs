@@ -179,6 +179,7 @@ pub(crate) fn encode_agent_statuses(statuses: &HashMap<u32, AgentStatus>) -> Str
                 "state": status.state.label(),
                 "detail": status.detail,
                 "summary": status.summary,
+                "session_name": status.session_name,
                 "since": status.since,
                 "expires_at": status.expires_at,
                 "updated_at": status.updated_at,
@@ -221,6 +222,10 @@ pub(crate) fn decode_agent_statuses(payload: &str) -> Vec<AgentStatus> {
                             .get("summary")
                             .and_then(Value::as_str)
                             .map(str::to_string),
+                        session_name: entry
+                            .get("session_name")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
                         since: entry.get("since").and_then(Value::as_u64).unwrap_or(0),
                         sequence: 0,
                         expires_at: entry.get("expires_at").and_then(Value::as_u64),
@@ -244,6 +249,8 @@ pub(crate) struct AgentStatus {
     pub(crate) state: AgentState,
     pub(crate) detail: Option<String>,
     pub(crate) summary: Option<String>,
+    /// The agent's own session name, when its hook reports one.
+    pub(crate) session_name: Option<String>,
     pub(crate) since: u64,
     pub(crate) sequence: u64,
     pub(crate) expires_at: Option<u64>,
@@ -290,6 +297,7 @@ pub(crate) struct AgentEvent {
     pub(crate) event: String,
     pub(crate) tool: Option<String>,
     pub(crate) summary: Option<String>,
+    pub(crate) session_name: Option<String>,
     pub(crate) pane_id: u32,
     pub(crate) timestamp: Option<u64>,
 }
@@ -314,6 +322,11 @@ pub(crate) fn parse_agent_event(payload: &str) -> Option<AgentEvent> {
             .and_then(Value::as_str)
             .map(|summary| summary.lines().next().unwrap_or("").trim().to_string())
             .filter(|summary| !summary.is_empty()),
+        session_name: payload
+            .get("session_name")
+            .and_then(Value::as_str)
+            .map(|name| name.lines().next().unwrap_or("").trim().to_string())
+            .filter(|name| !name.is_empty()),
         pane_id: payload.get("pane_id").and_then(Value::as_u64).unwrap_or(0) as u32,
         timestamp: payload.get("ts_ms").and_then(Value::as_u64),
     })
@@ -327,6 +340,15 @@ pub(crate) fn agent_label(source: &str) -> String {
         other => other,
     }
     .to_string()
+}
+
+/// Pi titles its terminal `π - <session name> - <cwd>` once a session has a
+/// name and `π - <cwd>` before, so only the three-part form carries a name.
+pub(crate) fn pi_session_name_from_title(title: &str) -> Option<String> {
+    let rest = title.trim().strip_prefix("π - ")?;
+    let (name, _cwd) = rest.rsplit_once(" - ")?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 pub(crate) fn detected_agent_label(command: &str) -> Option<&'static str> {
