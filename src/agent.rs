@@ -351,6 +351,41 @@ pub(crate) fn pi_session_name_from_title(title: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// Whether a command line, as Zellij reports it, is an interactive shell: a
+/// shell given only flags. A shell running a script or `-c` may be a wrapper
+/// around an agent that is still running, so it does not count.
+pub(crate) fn is_interactive_shell<S: AsRef<str>>(command: &[S]) -> bool {
+    let Some((program, args)) = command.split_first() else {
+        return false;
+    };
+    let program = program.as_ref();
+    let name = program
+        .rsplit('/')
+        .next()
+        .unwrap_or(program)
+        .trim_start_matches('-');
+    let shell = matches!(
+        name,
+        "sh" | "bash"
+            | "zsh"
+            | "fish"
+            | "dash"
+            | "ksh"
+            | "mksh"
+            | "tcsh"
+            | "csh"
+            | "nu"
+            | "xonsh"
+            | "elvish"
+            | "pwsh"
+    );
+    shell
+        && args.iter().all(|arg| {
+            let arg = arg.as_ref();
+            arg.starts_with('-') && arg != "-c" && arg != "-Command"
+        })
+}
+
 pub(crate) fn detected_agent_label(command: &str) -> Option<&'static str> {
     match command {
         "claude" | "claude-code" => Some("Claude Code"),

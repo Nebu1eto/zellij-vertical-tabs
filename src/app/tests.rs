@@ -1087,6 +1087,147 @@ fn quiet_agents_stay_listed_as_idle_until_their_pane_closes() {
 }
 
 #[test]
+fn a_terminated_agent_leaves_when_its_shell_takes_the_terminal_back() {
+    let mut state = State::default();
+    state.panes.panes.insert(
+        0,
+        vec![PaneInfo {
+            id: 7,
+            ..PaneInfo::default()
+        }],
+    );
+    // A hook-reported agent that is killed never sends SessionEnd.
+    assert!(state.apply_agent_event(agent_event("claude-code", 7, None, None)));
+    let leftover = encode_agent_statuses(&state.agent_statuses);
+
+    // Zellij reports the shell itself, as background, once the agent is gone.
+    state.update(Event::CommandChanged(
+        PaneId::Terminal(7),
+        vec!["/bin/zsh".to_string()],
+        false,
+        Vec::new(),
+    ));
+    assert!(state.agent_statuses.is_empty());
+
+    // A sibling sidebar's copy written before it saw the exit is not adopted.
+    assert!(!state.merge_agent_statuses(decode_agent_statuses(&leftover)));
+    assert!(state.agent_statuses.is_empty());
+
+    // An async hook of the exited agent that arrives late is ignored too, even
+    // one stamped after the exit was seen, unless it starts a new session.
+    let late = |event: &str, timestamp: u64| AgentEvent {
+        event: event.to_string(),
+        timestamp: Some(timestamp),
+        ..agent_event("choco-pi", 7, None, None)
+    };
+    let after_exit = unix_millis() + 60_000;
+    assert!(!state.handle_agent_event(late("PostToolUse", after_exit)));
+    assert!(!state.handle_agent_event(late("SessionStart", 1)));
+    assert!(state.agent_statuses.is_empty());
+    assert!(state.handle_agent_event(late("SessionStart", after_exit)));
+    assert!(state.handle_agent_event(late("UserPromptSubmit", after_exit + 1)));
+    assert_eq!(state.agent_statuses[&7].state, AgentState::Thinking);
+    state.agent_statuses.clear();
+
+    // A detected agent started again in the same pane is listed again.
+    state.update(Event::CommandChanged(
+        PaneId::Terminal(7),
+        vec!["claude".to_string()],
+        true,
+        Vec::new(),
+    ));
+    assert!(state.agent_statuses.contains_key(&7));
+}
+
+#[test]
+fn a_nested_shell_taking_the_terminal_back_clears_the_agent_but_a_wrapper_does_not() {
+    let foreground = |state: &mut State, command: &[&str], is_foreground: bool| {
+        state.update(Event::CommandChanged(
+            PaneId::Terminal(7),
+            command.iter().map(|arg| arg.to_string()).collect(),
+            is_foreground,
+            Vec::new(),
+        ));
+    };
+    let mut state = State::default();
+    state.panes.panes.insert(
+        0,
+        vec![PaneInfo {
+            id: 7,
+            ..PaneInfo::default()
+        }],
+    );
+    assert!(state.apply_agent_event(agent_event("claude-code", 7, None, None)));
+
+    // A wrapper script or `-c` shell may still be running the agent.
+    foreground(
+        &mut state,
+        &["/bin/bash", "/usr/local/bin/claude-wrapper"],
+        true,
+    );
+    foreground(&mut state, &["bash", "-c", "claude"], true);
+    assert!(state.agent_statuses.contains_key(&7));
+
+    // An interactive shell nested in the pane's shell holds the terminal again.
+    foreground(&mut state, &["-zsh", "-l"], true);
+    assert!(state.agent_statuses.is_empty());
+
+    // A command pane running `bash -c` reports itself as background while the
+    // agent inside it still runs.
+    let mut state = State::default();
+    state.panes.panes.insert(
+        0,
+        vec![PaneInfo {
+            id: 7,
+            terminal_command: Some("bash -c claude".to_string()),
+            ..PaneInfo::default()
+        }],
+    );
+    assert!(state.apply_agent_event(agent_event("claude-code", 7, None, None)));
+    foreground(&mut state, &["bash", "-c", "claude"], false);
+    assert!(state.agent_statuses.contains_key(&7));
+}
+
+#[test]
+fn a_running_command_pane_agent_is_not_cleared_as_background() {
+    let mut state = State::default();
+    state.panes.panes.insert(
+        0,
+        vec![PaneInfo {
+            id: 7,
+            terminal_command: Some("claude".to_string()),
+            ..PaneInfo::default()
+        }],
+    );
+    assert!(state.apply_agent_event(agent_event("claude-code", 7, None, None)));
+
+    // A command pane's own command has no shell above it, so Zellij reports
+    // it as background while it is still running.
+    state.update(Event::CommandChanged(
+        PaneId::Terminal(7),
+        vec!["claude".to_string()],
+        false,
+        Vec::new(),
+    ));
+    assert!(state.agent_statuses.contains_key(&7));
+
+    // Once the command exits and the pane is only held open, the agent goes.
+    state.update(Event::PaneUpdate(PaneManifest {
+        panes: HashMap::from([(
+            0,
+            vec![PaneInfo {
+                id: 7,
+                terminal_command: Some("claude".to_string()),
+                exited: true,
+                is_held: true,
+                ..PaneInfo::default()
+            }],
+        )]),
+    }));
+    assert!(state.agent_statuses.is_empty());
+}
+
+#[test]
 fn tab_window_keeps_the_active_tab_visible() {
     assert_eq!(vertical_tab_window(3, 0, 5), vec![0, 1, 2]);
     assert_eq!(vertical_tab_window(10, 0, 3), vec![0, 1, 2]);

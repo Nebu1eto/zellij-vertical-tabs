@@ -93,6 +93,10 @@ pub(crate) struct State {
     pub(crate) visible_horizontal_tabs: Vec<TabHitbox>,
     pub(crate) last_hook_timestamp_by_pane: HashMap<u32, u64>,
     pub(crate) session_end_timestamp_by_pane: HashMap<u32, u64>,
+    /// Panes whose shell holds the terminal foreground again, with the moment
+    /// (Unix milliseconds) that was seen: whatever agent ran there has exited,
+    /// so neither its late hooks nor a sibling's copy of it are adopted.
+    pub(crate) shell_idle_panes: HashMap<u32, u64>,
     pub(crate) pending_width_sync: Option<PendingWidthSync>,
     pub(crate) last_observed_sidebar_width: Option<usize>,
     pub(crate) last_observed_tab_width: Option<usize>,
@@ -258,7 +262,7 @@ impl ZellijPlugin for State {
                     self.active_command = is_foreground.then(|| command_label(&command));
                 }
                 if let PaneId::Terminal(id) = pane_id {
-                    self.update_detected_agent(id, &command, is_foreground);
+                    self.observe_foreground_command(id, &command, is_foreground);
                 }
             }
             Event::RunCommandResult(exit_code, stdout, _, context) => {
@@ -952,6 +956,18 @@ impl State {
     }
 
     pub(crate) fn handle_agent_event(&mut self, event: AgentEvent) -> bool {
+        // Async hooks of an agent that has already exited can still arrive. Only
+        // a session started after the shell took the terminal back is adopted.
+        if let Some(idle_since) = self.shell_idle_panes.get(&event.pane_id).copied() {
+            if event.event != "SessionStart"
+                || event
+                    .timestamp
+                    .is_none_or(|timestamp| timestamp < idle_since)
+            {
+                return false;
+            }
+            self.shell_idle_panes.remove(&event.pane_id);
+        }
         if let Some(session_end_timestamp) = self
             .session_end_timestamp_by_pane
             .get(&event.pane_id)
@@ -2065,17 +2081,13 @@ impl State {
     }
 
     pub(crate) fn detect_agents_from_manifest(&mut self) {
-        // A pane that no longer exists cannot host an agent any more.
-        let live: HashSet<u32> = self
-            .panes
-            .panes
-            .values()
-            .flatten()
-            .filter(|pane| !pane.is_plugin)
-            .map(|pane| pane.id)
-            .collect();
-        if !live.is_empty() {
+        // A pane that no longer exists, or whose command has exited and is only
+        // held open, cannot host an agent any more.
+        if !self.panes.panes.is_empty() {
+            let live = self.live_terminal_panes();
             self.agent_statuses
+                .retain(|pane_id, _| live.contains(pane_id));
+            self.shell_idle_panes
                 .retain(|pane_id, _| live.contains(pane_id));
         }
         let running: Vec<(u32, Vec<String>)> = self
@@ -2096,6 +2108,43 @@ impl State {
         for (pane_id, command) in running {
             self.update_detected_agent(pane_id, &command, true);
         }
+    }
+
+    /// Reacts to Zellij's report of what holds a pane's terminal foreground.
+    pub(crate) fn observe_foreground_command(
+        &mut self,
+        pane_id: u32,
+        command: &[String],
+        is_foreground: bool,
+    ) {
+        // A shell holding the terminal again means the agent in the pane has
+        // exited, however it ended: either the pane's own shell (reported as
+        // background) or a nested shell it was started from. A command pane
+        // reports its own command as background while it runs, so that only
+        // counts when the command is itself an interactive shell; otherwise the
+        // pane's exit is seen through the manifest.
+        let shell_idle = if is_foreground {
+            is_interactive_shell(command)
+        } else {
+            self.panes.panes.values().flatten().any(|pane| {
+                pane.id == pane_id
+                    && !pane.is_plugin
+                    && pane.terminal_command.as_deref().is_none_or(|own| {
+                        is_interactive_shell(&own.split_whitespace().collect::<Vec<_>>())
+                    })
+            })
+        };
+        if shell_idle {
+            self.agent_statuses.remove(&pane_id);
+            self.shell_idle_panes
+                .entry(pane_id)
+                .or_insert_with(unix_millis);
+            return;
+        }
+        if is_foreground {
+            self.shell_idle_panes.remove(&pane_id);
+        }
+        self.update_detected_agent(pane_id, command, is_foreground);
     }
 
     pub(crate) fn update_detected_agent(
@@ -2309,17 +2358,14 @@ impl State {
     pub(crate) fn merge_agent_statuses(&mut self, incoming: Vec<AgentStatus>) -> bool {
         // A pane this instance knows nothing about is not resurrected: the
         // manifest, not the file, decides which panes still exist.
-        let live: HashSet<u32> = self
-            .panes
-            .panes
-            .values()
-            .flatten()
-            .filter(|pane| !pane.is_plugin)
-            .map(|pane| pane.id)
-            .collect();
+        let known_manifest = !self.panes.panes.is_empty();
+        let live = self.live_terminal_panes();
         let mut changed = false;
         for mut status in incoming {
-            if !live.is_empty() && !live.contains(&status.pane_id) {
+            if known_manifest && !live.contains(&status.pane_id) {
+                continue;
+            }
+            if self.shell_idle_panes.contains_key(&status.pane_id) {
                 continue;
             }
             if self
@@ -2341,6 +2387,17 @@ impl State {
             changed = true;
         }
         changed
+    }
+
+    /// Terminal panes that can still host an agent: present and not exited.
+    pub(crate) fn live_terminal_panes(&self) -> HashSet<u32> {
+        self.panes
+            .panes
+            .values()
+            .flatten()
+            .filter(|pane| !pane.is_plugin && !pane.exited)
+            .map(|pane| pane.id)
+            .collect()
     }
 
     pub(crate) fn refresh_cwds(&mut self) {
