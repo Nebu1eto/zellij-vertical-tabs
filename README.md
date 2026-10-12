@@ -2,7 +2,7 @@
 
 English | [한국어](README.ko.md)
 
-A Zellij WebAssembly plugin with two views: a horizontal status bar and a vertical sidebar. It shows tabs, repository, branch, and linked-worktree state, a clock, and coding-agent status for choco-pi, Claude Code, Codex, and detected terminal agents.
+A Zellij WebAssembly plugin for a horizontal status bar, a vertical sidebar, and a one-line tab strip. It shows tabs grouped into optional spaces, repository, branch, and linked-worktree state, a clock or the track Apple Music is playing, and coding-agent status for choco-pi, Claude Code, Codex, and detected terminal agents. A fourth, background view keeps one agent list for the whole session.
 
 ![Horizontal status bar and vertical sidebar showing tabs and coding agents](assets/demo.png)
 
@@ -19,7 +19,7 @@ curl -fL https://github.com/Nebu1eto/zellij-vertical-tabs/releases/latest/downlo
   -o ~/.config/zellij/plugins/vertical-sidebar.wasm
 ```
 
-On first launch, focus each plugin pane and press `y` to grant the requested permissions.
+On first launch, focus each plugin pane and press `y` to grant the requested permissions. Then add the background daemon described in [Shared agent state](#shared-agent-state) and start a new session.
 
 ## Configure
 
@@ -171,19 +171,50 @@ A tab you have not named shows the repository it sits in, or its directory, and 
 
 ## Coding-agent status
 
-The plugin detects supported terminal agent processes without hooks. Hooks add lifecycle and task details by sending JSON through the named pipe:
+Without hooks, the plugin detects agents from the foreground command of each terminal pane: `claude`, `codex`, `pi`, `opencode`, `gemini`, `cursor-agent`, `aider`, and `amp`. A detected agent is listed as idle. Hooks add its lifecycle and task by sending JSON through the named pipe:
 
 ```sh
 zellij pipe --name coding-agent-status -- "$payload"
 ```
 
-The JSON may identify the pane, event, tool, task summary, source agent, session name, and timestamp. Hook events from choco-pi, Claude Code, and Codex update the matching pane's status.
+For example, from a hook running inside the agent's pane:
+
+```sh
+payload=$(jq -nc --arg pane "$ZELLIJ_PANE_ID" '{
+  source_agent: "claude-code", hook_event: "PreToolUse", tool_name: "Bash",
+  pane_id: ($pane | tonumber), ts_ms: (now * 1000 | floor)
+}')
+```
+
+| Field | Purpose |
+| --- | --- |
+| `hook_event` | Required. The hook event name, as below |
+| `pane_id` | The agent's terminal pane, from `ZELLIJ_PANE_ID` |
+| `source_agent` | `choco-pi`, `claude-code`, `codex`, or any other name to show |
+| `tool_name` | The tool in use, shown as the card's detail; for `Notification`, the notification text |
+| `summary` | The task, first line only |
+| `session_name` | choco-pi session name |
+| `ts_ms` | Send time in Unix milliseconds; older events than one already applied to the pane are ignored |
+
+| Hook event | Card state |
+| --- | --- |
+| `SessionStart` | idle |
+| `UserPromptSubmit`, `PostCompact` | thinking |
+| `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `SubagentStart`, `SubagentStop` | working |
+| `PreCompact` | compacting |
+| `PermissionRequest` | blocked until the next event |
+| `Notification` | blocked when the text asks for permission or approval, otherwise done |
+| `Stop` | done, cleared once you focus the pane |
+| `StopFailure` | idle |
+| `SessionEnd` | removed |
+
+A thinking, working, or compacting agent that sends nothing for 15 minutes goes back to idle and stays listed. An agent leaves the list on `SessionEnd`, when its pane closes, or when a shell takes the terminal back, however the agent ended; late hooks from it are then ignored until a newer `SessionStart`.
 
 Each agent card starts with the pane's location. With spaces on it reads `space·tab·pane`, where the tab number is the tab's number inside its space; otherwise it reads `tab·pane`. A choco-pi card shows the session name from the payload's `session_name`, or from Pi's `π - <session> - <directory>` terminal title, before falling back to the task summary.
 
 ### Shared agent state
 
-Every tab runs its own copy of each view, and Zellij sends tab and pane updates only to the focused tab's plugins, so views in other tabs can disagree about which agents exist. Load the plugin once more as a background daemon in `config.kdl`; it tracks every agent for the session and all views show its list:
+Every tab runs its own copy of each view, and Zellij sends tab and pane updates only to the focused tab's plugins, so views in other tabs can disagree about which agents exist. Load the plugin once more as a background daemon in `config.kdl`; it tracks every agent for the session and all views show its list as is:
 
 ```kdl
 load_plugins {
@@ -193,7 +224,9 @@ load_plugins {
 }
 ```
 
-Point it at the same file as the status bar or tab strip, and grant that view its permissions first: a background plugin has no pane to show a permission prompt in, so it relies on the grant already cached for the file. Zellij loads the daemon when a session starts. Without it, or when it stops responding for a few seconds, the views share statuses among themselves as before.
+Point it at the same file as the status bar or tab strip, and grant that view its permissions first: a background plugin has no pane to show a permission prompt in, so it relies on the grant already cached for the file. Zellij loads the daemon when a session starts, so a running session keeps the old behaviour until you start a new one.
+
+The daemon publishes the list to `zellij-agent-state-<session>.json` in Zellij's temporary directory and refreshes it every 2 seconds. When several clients are attached, Zellij runs one daemon per client: one writes and the others stand by, taking over within about 6 seconds if its client leaves. Without a daemon, or when the file has not been refreshed for 6 seconds, the views track agents themselves and share them through `zellij-agent-status-<session>.json`, which can drift between tabs.
 
 ## Build
 

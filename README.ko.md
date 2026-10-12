@@ -2,7 +2,7 @@
 
 [English](README.md) | 한국어
 
-가로 상태 표시줄과 세로 사이드바를 제공하는 Zellij WebAssembly 플러그인입니다. 탭, 저장소, 브랜치, 연결된 워크트리 상태와 시계, choco-pi, Claude Code, Codex 및 터미널에서 감지한 코딩 에이전트의 상태를 표시합니다.
+가로 상태 표시줄, 세로 사이드바, 한 줄짜리 탭 바를 제공하는 Zellij WebAssembly 플러그인입니다. 탭(스페이스로 묶을 수 있음), 저장소, 브랜치, 연결된 워크트리 상태, 시계나 Apple Music에서 재생 중인 곡, choco-pi, Claude Code, Codex 및 터미널에서 감지한 코딩 에이전트의 상태를 표시합니다. 네 번째 뷰는 백그라운드에서 세션 전체의 에이전트 목록을 하나로 관리합니다.
 
 ![탭과 코딩 에이전트를 표시하는 가로 상태 표시줄과 세로 사이드바](assets/demo.png)
 
@@ -19,7 +19,7 @@ curl -fL https://github.com/Nebu1eto/zellij-vertical-tabs/releases/latest/downlo
   -o ~/.config/zellij/plugins/vertical-sidebar.wasm
 ```
 
-처음 실행할 때 각 플러그인 창에 포커스를 두고 `y`를 눌러 요청된 권한을 허용합니다.
+처음 실행할 때 각 플러그인 창에 포커스를 두고 `y`를 눌러 요청된 권한을 허용합니다. 그다음 [에이전트 상태 공유](#에이전트-상태-공유)의 백그라운드 데몬을 추가하고 새 세션을 시작하세요.
 
 ## 설정
 
@@ -171,19 +171,50 @@ pane split_direction="horizontal" {
 
 ## 코딩 에이전트 상태
 
-훅을 설정하지 않아도 플러그인이 지원하는 터미널 에이전트 프로세스를 감지합니다. 훅을 사용하면 다음 이름의 파이프로 JSON을 보내 수명 주기와 작업 세부 정보를 추가할 수 있습니다.
+훅이 없어도 플러그인은 각 터미널 창의 포그라운드 명령으로 에이전트를 감지합니다. 대상은 `claude`, `codex`, `pi`, `opencode`, `gemini`, `cursor-agent`, `aider`, `amp`이며, 감지된 에이전트는 idle로 표시됩니다. 훅을 쓰면 다음 이름의 파이프로 JSON을 보내 수명 주기와 작업 내용을 더할 수 있습니다.
 
 ```sh
 zellij pipe --name coding-agent-status -- "$payload"
 ```
 
-JSON에는 창, 이벤트, 도구, 작업 요약, 소스 에이전트, 세션 이름, 타임스탬프를 넣을 수 있습니다. choco-pi, Claude Code, Codex의 훅 이벤트는 해당 창의 상태를 갱신합니다.
+예를 들어 에이전트 창 안에서 실행되는 훅이라면 다음과 같습니다.
+
+```sh
+payload=$(jq -nc --arg pane "$ZELLIJ_PANE_ID" '{
+  source_agent: "claude-code", hook_event: "PreToolUse", tool_name: "Bash",
+  pane_id: ($pane | tonumber), ts_ms: (now * 1000 | floor)
+}')
+```
+
+| 필드 | 용도 |
+| --- | --- |
+| `hook_event` | 필수. 아래 표의 훅 이벤트 이름 |
+| `pane_id` | 에이전트가 있는 터미널 창. `ZELLIJ_PANE_ID`에서 가져옵니다 |
+| `source_agent` | `choco-pi`, `claude-code`, `codex` 또는 표시할 다른 이름 |
+| `tool_name` | 사용 중인 도구로, 카드의 세부 정보에 표시됩니다. `Notification`이면 알림 문구입니다 |
+| `summary` | 작업 요약. 첫 줄만 씁니다 |
+| `session_name` | choco-pi 세션 이름 |
+| `ts_ms` | 보낸 시각(Unix 밀리초). 그 창에 이미 반영된 이벤트보다 오래된 이벤트는 무시합니다 |
+
+| 훅 이벤트 | 카드 상태 |
+| --- | --- |
+| `SessionStart` | idle |
+| `UserPromptSubmit`, `PostCompact` | thinking |
+| `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `SubagentStart`, `SubagentStop` | working |
+| `PreCompact` | compacting |
+| `PermissionRequest` | 다음 이벤트까지 blocked |
+| `Notification` | 문구가 권한이나 승인을 요청하면 blocked, 아니면 done |
+| `Stop` | done. 그 창에 포커스하면 사라집니다 |
+| `StopFailure` | idle |
+| `SessionEnd` | 목록에서 제거 |
+
+thinking, working, compacting 상태에서 15분 동안 아무 이벤트도 없으면 idle로 돌아가고 목록에는 남습니다. `SessionEnd`를 받거나, 창이 닫히거나, 에이전트가 어떻게 끝났든 셸이 터미널을 되찾으면 목록에서 빠집니다. 그 뒤에 늦게 도착한 훅은 더 새로운 `SessionStart`가 올 때까지 무시합니다.
 
 에이전트 카드는 창의 위치로 시작합니다. 스페이스를 켜면 `스페이스·탭·창` 순서이고 탭 번호는 스페이스 안에서의 번호입니다. 스페이스를 끄면 `탭·창`입니다. choco-pi 카드는 페이로드의 `session_name`이나 Pi 터미널 제목 `π - <세션> - <디렉터리>`에서 얻은 세션 이름을 먼저 보여 주고, 없으면 작업 요약을 보여 줍니다.
 
 ### 에이전트 상태 공유
 
-뷰는 탭마다 따로 실행되고, Zellij는 탭과 창 변경을 포커스된 탭의 플러그인에만 보냅니다. 그래서 다른 탭의 뷰는 어떤 에이전트가 있는지 서로 다르게 알 수 있습니다. `config.kdl`에서 플러그인을 백그라운드 데몬으로 한 번 더 불러오면, 데몬이 세션의 모든 에이전트를 추적하고 모든 뷰가 그 목록을 그대로 보여 줍니다.
+뷰는 탭마다 따로 실행되고, Zellij는 탭과 창 변경을 포커스된 탭의 플러그인에만 보냅니다. 그래서 탭마다 뷰가 아는 에이전트 목록이 달라질 수 있습니다. `config.kdl`에서 플러그인을 백그라운드 데몬으로 한 번 더 불러오면, 데몬이 세션의 모든 에이전트를 추적하고 모든 뷰가 그 목록을 그대로 보여 줍니다.
 
 ```kdl
 load_plugins {
@@ -193,7 +224,9 @@ load_plugins {
 }
 ```
 
-데몬은 상태 표시줄이나 탭 바와 같은 파일을 가리키게 하고, 그 뷰에 먼저 권한을 허용해 두세요. 백그라운드 플러그인은 권한 요청을 띄울 창이 없어서 그 파일에 이미 저장된 권한을 그대로 씁니다. Zellij는 세션을 시작할 때 데몬을 불러옵니다. 데몬이 없거나 몇 초 동안 응답하지 않으면 뷰끼리 상태를 공유하는 기존 방식으로 동작합니다.
+데몬은 상태 표시줄이나 탭 바와 같은 파일을 가리키게 하고, 그 뷰에 먼저 권한을 허용해 두세요. 백그라운드 플러그인은 권한 요청을 띄울 창이 없어서 그 파일에 이미 저장된 권한을 그대로 씁니다. Zellij는 세션을 시작할 때 데몬을 불러오므로, 이미 실행 중인 세션은 새 세션을 시작하기 전까지 기존 방식으로 동작합니다.
+
+데몬은 목록을 Zellij 임시 디렉터리의 `zellij-agent-state-<세션>.json`에 쓰고 2초마다 갱신합니다. 클라이언트가 여럿 붙어 있으면 Zellij가 클라이언트마다 데몬을 하나씩 실행합니다. 그중 하나만 쓰고 나머지는 대기하다가, 쓰던 데몬의 클라이언트가 떠나면 6초 안팎에 이어받습니다. 데몬이 없거나 파일이 6초 넘게 갱신되지 않으면 뷰가 직접 에이전트를 추적하고 `zellij-agent-status-<세션>.json`으로 서로 공유하며, 이 경우 탭마다 목록이 어긋날 수 있습니다.
 
 ## 빌드
 
