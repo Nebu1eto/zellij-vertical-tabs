@@ -2675,12 +2675,9 @@ fn the_daemon_publishes_what_it_hears_and_a_second_instance_stands_by() {
     ));
     let snapshot = decode_daemon_snapshot(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(snapshot.writer, "4:1");
-    assert!(
-        standby.agent_statuses.contains_key(&9),
-        "a standby keeps the holder's agents, even one it never heard from"
-    );
 
-    // Once the holder stops beating, the standby takes over with all of them.
+    // Once the holder stops beating, the standby takes over with all of them,
+    // even the agent it never heard from.
     std::fs::write(
         &path,
         encode_daemon_snapshot(&daemon.agent_statuses, "4:1", 1),
@@ -2787,4 +2784,131 @@ fn a_daemon_whose_client_left_stops_writing() {
     daemon.update(Event::ListClients(vec![client(true)]));
     assert!(std::fs::read_to_string(&path).is_ok());
     remove_session_files(&session);
+}
+
+#[test]
+fn a_standby_keeps_what_it_heard_while_the_holder_went_quiet() {
+    let session = daemon_test_session("handoff");
+    remove_session_files(&session);
+    let path = daemon_snapshot_path(&session).unwrap();
+    let hook = |event: &str, pane: u32, ts: u64| {
+        agent_pipe(&format!(
+            r#"{{"source_agent":"choco-pi","hook_event":"{event}","tool_name":"exec","pane_id":{pane},"ts_ms":{ts},"summary":"task {pane}"}}"#
+        ))
+    };
+    let mut holder = daemon_state(&session, "4:1");
+    let mut standby = daemon_state(&session, "4:2");
+    for daemon in [&mut holder, &mut standby] {
+        daemon.pipe(hook("PreToolUse", 7, 1));
+    }
+    holder.pipe(hook("PreToolUse", 9, 2));
+
+    // The holder's client leaves; only the standby hears the next hooks.
+    standby.pipe(hook("PermissionRequest", 7, 3));
+    assert_eq!(
+        decode_daemon_snapshot(&std::fs::read_to_string(&path).unwrap())
+            .unwrap()
+            .writer,
+        "4:1",
+        "the holder is still live, so the standby only stands by"
+    );
+    let last = decode_daemon_snapshot(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        encode_daemon_snapshot(
+            &holder.agent_statuses,
+            "4:1",
+            last.heartbeat_ms - DAEMON_STALE_MS,
+        ),
+    )
+    .unwrap();
+    standby.update(Event::Timer(1.0));
+
+    let snapshot = decode_daemon_snapshot(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(snapshot.writer, "4:2");
+    let mut panes: Vec<(u32, AgentState)> = snapshot
+        .statuses
+        .iter()
+        .map(|status| (status.pane_id, status.state))
+        .collect();
+    panes.sort_by_key(|(pane_id, _)| *pane_id);
+    assert_eq!(
+        panes,
+        vec![(7, AgentState::Blocked), (9, AgentState::Working)],
+        "the request heard during the handoff survives, and the agent only the holder heard is kept"
+    );
+    remove_session_files(&session);
+}
+
+#[test]
+fn a_new_daemon_ignores_the_snapshot_a_dead_session_left_behind() {
+    let session = daemon_test_session("leftover");
+    remove_session_files(&session);
+    let path = daemon_snapshot_path(&session).unwrap();
+    let mut old = daemon_state(&session, "9:9");
+    old.pipe(agent_pipe(
+        r#"{"source_agent":"choco-pi","hook_event":"PreToolUse","tool_name":"exec","pane_id":7,"ts_ms":1}"#,
+    ));
+    std::fs::write(&path, encode_daemon_snapshot(&old.agent_statuses, "9:9", 1)).unwrap();
+
+    let mut daemon = daemon_state(&session, "4:1");
+    daemon.update(Event::Timer(1.0));
+    let snapshot = decode_daemon_snapshot(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(snapshot.writer, "4:1");
+    assert!(snapshot.statuses.is_empty(), "got {:?}", snapshot.statuses);
+    remove_session_files(&session);
+}
+
+#[test]
+fn a_takeover_fills_gaps_but_does_not_revive_what_ended() {
+    let status = |pane_id, state, updated_at, summary: Option<&str>| AgentStatus {
+        pane_id,
+        source: "choco-pi".to_string(),
+        state,
+        detail: None,
+        summary: summary.map(str::to_string),
+        session_name: None,
+        since: updated_at,
+        sequence: 0,
+        expires_at: None,
+        updated_at,
+        detected: false,
+        clear_on_focus: false,
+    };
+    let holder = DaemonSnapshot {
+        writer: "4:1".to_string(),
+        heartbeat_ms: 100_000,
+        statuses: vec![
+            status(1, AgentState::Working, 90, Some("from holder")),
+            status(2, AgentState::Working, 90, None),
+            status(3, AgentState::Done, 90, None),
+        ],
+    };
+    let mut local: HashMap<u32, AgentStatus> = [
+        // Heard after the holder went quiet: kept, summary filled in.
+        (1, status(1, AgentState::Blocked, 101, None)),
+        // Listed only here and unchanged since before the holder's heartbeat:
+        // the holder removed it.
+        (4, status(4, AgentState::Done, 80, None)),
+        // Listed only here, but newer than the holder's last word.
+        (5, status(5, AgentState::Thinking, 102, None)),
+    ]
+    .into_iter()
+    .collect();
+    merge_holder_statuses(&mut local, &holder, |status| status.pane_id == 3);
+
+    let mut panes: Vec<(u32, AgentState)> = local
+        .values()
+        .map(|status| (status.pane_id, status.state))
+        .collect();
+    panes.sort_by_key(|(pane_id, _)| *pane_id);
+    assert_eq!(
+        panes,
+        vec![
+            (1, AgentState::Blocked),
+            (2, AgentState::Working),
+            (5, AgentState::Thinking)
+        ]
+    );
+    assert_eq!(local[&1].summary.as_deref(), Some("from holder"));
 }

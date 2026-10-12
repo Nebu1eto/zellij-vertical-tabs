@@ -78,6 +78,13 @@ pub(crate) struct State {
     /// Daemon only: its client has left the session. The instance lives on but
     /// no longer receives tab or pane updates, so it must stop writing.
     pub(crate) daemon_detached: bool,
+    /// Daemon only: the snapshot of another client's daemon as last seen while
+    /// it was live, merged in when this instance takes over. A snapshot never
+    /// seen live, such as one left by an earlier session, is never merged.
+    pub(crate) daemon_holder: Option<DaemonSnapshot>,
+    /// When the Done card of each pane was last cleared by focusing it, so a
+    /// takeover does not bring it back from an older snapshot.
+    pub(crate) focus_cleared_at: HashMap<u32, u64>,
     pub(crate) cwd_error: Option<String>,
     pub(crate) configured_home: Option<PathBuf>,
     pub(crate) git_context: Option<GitContext>,
@@ -2104,6 +2111,7 @@ impl State {
             // The daemon clears it for everyone; a mirror would only flicker.
             if clear && !self.daemon_owned {
                 self.agent_statuses.remove(&pane_id);
+                self.focus_cleared_at.insert(pane_id, unix_seconds());
             }
         }
     }
@@ -2481,9 +2489,9 @@ impl State {
     }
 
     /// Writes the snapshot when the statuses changed or the heartbeat is due,
-    /// unless the daemon instance of another client holds it. A standby keeps
-    /// the holder's statuses: it only heard the hooks sent since it loaded, and
-    /// an agent that has been quiet since would vanish when it takes over.
+    /// unless the daemon instance of another client holds it. A standby goes on
+    /// tracking agents itself and remembers the holder's snapshot, which fills
+    /// in what it missed when it takes over.
     pub(crate) fn publish_daemon_snapshot(&mut self) {
         let Some(path) = daemon_snapshot_path(&self.session_name) else {
             return;
@@ -2511,17 +2519,44 @@ impl State {
             .map(|snapshot| (snapshot.writer.as_str(), snapshot.heartbeat_ms));
         if !daemon_may_write(holder, &self.daemon_writer, now) {
             self.daemon_published = None;
-            if let Some(snapshot) = current {
-                self.adopt_statuses(snapshot.statuses);
-            }
+            self.daemon_holder = current;
             return;
         }
+        if let Some(holder) = self.daemon_holder.take() {
+            self.take_over_from(&holder);
+        }
+        let statuses = encode_daemon_statuses(&self.agent_statuses);
         let payload = encode_daemon_snapshot(&self.agent_statuses, &self.daemon_writer, now);
         let staging = format!("{}.{}.staging", path, self.daemon_writer.replace(':', "-"));
         if std::fs::write(&staging, &payload).is_ok() && std::fs::rename(&staging, &path).is_ok() {
             self.daemon_published = Some((statuses, now));
         } else {
             let _ = std::fs::remove_file(&staging);
+        }
+    }
+
+    pub(crate) fn take_over_from(&mut self, holder: &DaemonSnapshot) {
+        let live = (!self.panes.panes.is_empty()).then(|| self.live_terminal_panes());
+        let shell_idle = &self.shell_idle_panes;
+        let session_ended = &self.session_end_timestamp_by_pane;
+        let focus_cleared = &self.focus_cleared_at;
+        merge_holder_statuses(&mut self.agent_statuses, holder, |status| {
+            shell_idle.contains_key(&status.pane_id)
+                || session_ended.contains_key(&status.pane_id)
+                || live
+                    .as_ref()
+                    .is_some_and(|live| !live.contains(&status.pane_id))
+                || focus_cleared
+                    .get(&status.pane_id)
+                    .is_some_and(|cleared| *cleared >= status.updated_at)
+        });
+        if let Some(latest) = self
+            .agent_statuses
+            .values()
+            .map(|status| status.sequence)
+            .max()
+        {
+            self.agent_sequence = self.agent_sequence.max(latest);
         }
     }
 

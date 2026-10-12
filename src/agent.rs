@@ -266,6 +266,45 @@ pub(crate) fn daemon_may_write(current: Option<(&str, u64)>, writer: &str, now_m
     })
 }
 
+/// A standby that takes over has tracked the same hooks and pane events as the
+/// holder, but only since it loaded, and the holder may have gone quiet before
+/// publishing the last of them. So the standby keeps what it knows and fills
+/// the gaps from the holder's last snapshot: agents it never heard of, unless
+/// `ended` says the standby saw them end, and the summary or session name it
+/// missed. An agent only the standby lists, unchanged since before the holder's
+/// last heartbeat, was removed by the holder and stays removed.
+pub(crate) fn merge_holder_statuses(
+    local: &mut HashMap<u32, AgentStatus>,
+    holder: &DaemonSnapshot,
+    ended: impl Fn(&AgentStatus) -> bool,
+) {
+    let held: HashMap<u32, &AgentStatus> = holder
+        .statuses
+        .iter()
+        .map(|status| (status.pane_id, status))
+        .collect();
+    local.retain(|pane_id, status| {
+        held.contains_key(pane_id)
+            || status.detected
+            || status.updated_at.saturating_mul(1_000) >= holder.heartbeat_ms.saturating_sub(1_000)
+    });
+    for (pane_id, theirs) in held {
+        if let Some(ours) = local.get_mut(&pane_id) {
+            if ours.summary.is_none() {
+                ours.summary.clone_from(&theirs.summary);
+            }
+            if ours.session_name.is_none() {
+                ours.session_name.clone_from(&theirs.session_name);
+            }
+            if ours.state == theirs.state {
+                ours.since = ours.since.min(theirs.since);
+            }
+        } else if !ended(theirs) {
+            local.insert(pane_id, theirs.clone());
+        }
+    }
+}
+
 pub(crate) fn decode_agent_statuses(payload: &str) -> Vec<AgentStatus> {
     let Ok(value) = serde_json::from_str::<Value>(payload) else {
         return Vec::new();
