@@ -53,7 +53,7 @@ The main configuration keys are:
 
 | Key | Values or purpose |
 | --- | --- |
-| `view` | `"horizontal"` or `"vertical"` |
+| `view` | `"horizontal"`, `"vertical"`, `"tabs"`, or `"daemon"` (see [Shared agent state](#shared-agent-state)) |
 | `show_tabs` | Show horizontal tabs; defaults to `"true"` |
 | `timezone_offset_hours` | Clock offset from UTC, in hours |
 | `home` | Home path used in displayed working directories |
@@ -180,6 +180,20 @@ zellij pipe --name coding-agent-status -- "$payload"
 The JSON may identify the pane, event, tool, task summary, source agent, session name, and timestamp. Hook events from choco-pi, Claude Code, and Codex update the matching pane's status.
 
 Each agent card starts with the pane's location. With spaces on it reads `space·tab·pane`, where the tab number is the tab's number inside its space; otherwise it reads `tab·pane`. A choco-pi card shows the session name from the payload's `session_name`, or from Pi's `π - <session> - <directory>` terminal title, before falling back to the task summary.
+
+### Shared agent state
+
+Every tab runs its own copy of each view, and Zellij sends tab and pane updates only to the focused tab's plugins, so views in other tabs can disagree about which agents exist. Load the plugin once more as a background daemon in `config.kdl`; it tracks every agent for the session and all views show its list:
+
+```kdl
+load_plugins {
+    "file:~/.config/zellij/plugins/vertical-tabs.wasm" {
+        view "daemon"
+    }
+}
+```
+
+Point it at the same file as the status bar or tab strip, and grant that view its permissions first: a background plugin has no pane to show a permission prompt in, so it relies on the grant already cached for the file. Zellij loads the daemon when a session starts. Without it, or when it stops responding for a few seconds, the views share statuses among themselves as before.
 
 ## Build
 
