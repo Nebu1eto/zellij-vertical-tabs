@@ -130,6 +130,9 @@ pub(crate) struct State {
     pub(crate) visible_horizontal_tabs: Vec<TabHitbox>,
     pub(crate) last_hook_timestamp_by_pane: HashMap<u32, u64>,
     pub(crate) session_end_timestamp_by_pane: HashMap<u32, u64>,
+    /// The hook session that created each pane's card. choco-pi runs its
+    /// subagents in process, so their hooks carry the parent's pane too.
+    pub(crate) session_owner_by_pane: HashMap<u32, String>,
     /// Panes whose shell holds the terminal foreground again, with the moment
     /// (Unix milliseconds) that was seen: whatever agent ran there has exited,
     /// so neither its late hooks nor a sibling's copy of it are adopted.
@@ -991,7 +994,7 @@ impl State {
         }
     }
 
-    pub(crate) fn handle_agent_event(&mut self, event: AgentEvent) -> bool {
+    pub(crate) fn handle_agent_event(&mut self, mut event: AgentEvent) -> bool {
         // Async hooks of an agent that has already exited can still arrive. Only
         // a session started after the shell took the terminal back is adopted.
         if let Some(idle_since) = self.shell_idle_panes.get(&event.pane_id).copied() {
@@ -1017,6 +1020,29 @@ impl State {
                 return false;
             }
             self.session_end_timestamp_by_pane.remove(&event.pane_id);
+        }
+
+        // A session nested in the card's own, such as a subagent, still shows
+        // the pane is busy, but its start and end are not the card's, and its
+        // prompt and name do not replace the owner's.
+        if let Some(session_id) = event.session_id.clone() {
+            let carded = self
+                .agent_statuses
+                .get(&event.pane_id)
+                .is_some_and(|status| !status.detected);
+            match self.session_owner_by_pane.get(&event.pane_id) {
+                Some(owner) if carded && *owner != session_id => {
+                    if matches!(event.event.as_str(), "SessionStart" | "SessionEnd") {
+                        return false;
+                    }
+                    event.summary = None;
+                    event.session_name = None;
+                }
+                Some(_) if carded => {}
+                _ => {
+                    self.session_owner_by_pane.insert(event.pane_id, session_id);
+                }
+            }
         }
 
         if let Some(timestamp) = event.timestamp {

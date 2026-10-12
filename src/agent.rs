@@ -420,6 +420,7 @@ pub(crate) struct AgentEvent {
     pub(crate) tool: Option<String>,
     pub(crate) summary: Option<String>,
     pub(crate) session_name: Option<String>,
+    pub(crate) session_id: Option<String>,
     pub(crate) pane_id: u32,
     pub(crate) timestamp: Option<u64>,
 }
@@ -449,6 +450,11 @@ pub(crate) fn parse_agent_event(payload: &str) -> Option<AgentEvent> {
             .and_then(Value::as_str)
             .map(|name| name.lines().next().unwrap_or("").trim().to_string())
             .filter(|name| !name.is_empty()),
+        session_id: payload
+            .get("session_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string),
         pane_id: payload.get("pane_id").and_then(Value::as_u64).unwrap_or(0) as u32,
         timestamp: payload.get("ts_ms").and_then(Value::as_u64),
     })
