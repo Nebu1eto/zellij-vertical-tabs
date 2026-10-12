@@ -11,6 +11,14 @@ pub(crate) const AGENT_STALL_SECONDS: u64 = 900;
 /// lets a sidebar in a new tab pick up statuses collected by its siblings.
 const AGENT_SYNC_DIR: &str = "/tmp";
 
+/// The daemon rewrites its snapshot at least this often, even unchanged, so the
+/// views can tell a live owner from one that has gone.
+pub(crate) const DAEMON_HEARTBEAT_MS: u64 = 2_000;
+
+/// A snapshot older than this no longer speaks for the session: the views fall
+/// back to sharing statuses among themselves, and a standby daemon takes over.
+pub(crate) const DAEMON_STALE_MS: u64 = 6_000;
+
 /// Lifecycle state shown in both views, following herdr's vocabulary so the
 /// glyph, the label and the colour always agree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +152,16 @@ pub(crate) fn tool_detail(source: &str, tool: Option<String>) -> Option<String> 
 }
 
 pub(crate) fn agent_sync_path(session_name: &str) -> Option<String> {
+    session_file_path("zellij-agent-status", session_name)
+}
+
+/// Where the daemon publishes the session's agent statuses. A file of its own,
+/// so a view that has not yet seen the daemon cannot overwrite it.
+pub(crate) fn daemon_snapshot_path(session_name: &str) -> Option<String> {
+    session_file_path("zellij-agent-state", session_name)
+}
+
+fn session_file_path(prefix: &str, session_name: &str) -> Option<String> {
     let name: String = session_name
         .chars()
         .map(|character| {
@@ -158,22 +176,47 @@ pub(crate) fn agent_sync_path(session_name: &str) -> Option<String> {
     if name.is_empty() {
         return None;
     }
-    Some(format!(
-        "{}/zellij-agent-status-{}.json",
-        AGENT_SYNC_DIR, name
-    ))
+    Some(format!("{AGENT_SYNC_DIR}/{prefix}-{name}.json"))
 }
 
 /// Statuses detected from the pane manifest stay out of the shared file: every
 /// instance reads the same manifest, so sharing them would only fight the local
 /// detection.
 pub(crate) fn encode_agent_statuses(statuses: &HashMap<u32, AgentStatus>) -> String {
-    let mut shared: Vec<&AgentStatus> = statuses.values().filter(|s| !s.detected).collect();
+    let entries = status_entries(statuses, false);
+    serde_json::json!({ "version": 1, "statuses": entries }).to_string()
+}
+
+/// The daemon is the only instance that decides, so its snapshot carries every
+/// status, detected ones included, and the views show it as it is.
+pub(crate) fn encode_daemon_statuses(statuses: &HashMap<u32, AgentStatus>) -> String {
+    Value::Array(status_entries(statuses, true)).to_string()
+}
+
+pub(crate) fn encode_daemon_snapshot(
+    statuses: &HashMap<u32, AgentStatus>,
+    writer: &str,
+    heartbeat_ms: u64,
+) -> String {
+    serde_json::json!({
+        "version": 2,
+        "writer": writer,
+        "heartbeat_ms": heartbeat_ms,
+        "statuses": status_entries(statuses, true),
+    })
+    .to_string()
+}
+
+fn status_entries(statuses: &HashMap<u32, AgentStatus>, include_detected: bool) -> Vec<Value> {
+    let mut shared: Vec<&AgentStatus> = statuses
+        .values()
+        .filter(|status| include_detected || !status.detected)
+        .collect();
     shared.sort_by_key(|status| status.pane_id);
-    let entries: Vec<Value> = shared
+    shared
         .iter()
         .map(|status| {
-            serde_json::json!({
+            let mut entry = serde_json::json!({
                 "pane_id": status.pane_id,
                 "source": status.source,
                 "state": status.state.label(),
@@ -184,16 +227,53 @@ pub(crate) fn encode_agent_statuses(statuses: &HashMap<u32, AgentStatus>) -> Str
                 "expires_at": status.expires_at,
                 "updated_at": status.updated_at,
                 "clear_on_focus": status.clear_on_focus,
-            })
+            });
+            if include_detected {
+                entry["detected"] = Value::Bool(status.detected);
+                entry["sequence"] = Value::from(status.sequence);
+            }
+            entry
         })
-        .collect();
-    serde_json::json!({ "version": 1, "statuses": entries }).to_string()
+        .collect()
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DaemonSnapshot {
+    pub(crate) writer: String,
+    pub(crate) heartbeat_ms: u64,
+    pub(crate) statuses: Vec<AgentStatus>,
+}
+
+pub(crate) fn decode_daemon_snapshot(payload: &str) -> Option<DaemonSnapshot> {
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    Some(DaemonSnapshot {
+        writer: value.get("writer")?.as_str()?.to_string(),
+        heartbeat_ms: value.get("heartbeat_ms")?.as_u64()?,
+        statuses: decode_status_entries(&value),
+    })
+}
+
+pub(crate) fn daemon_snapshot_is_fresh(heartbeat_ms: u64, now_ms: u64) -> bool {
+    now_ms.saturating_sub(heartbeat_ms) < DAEMON_STALE_MS
+}
+
+/// Zellij runs one instance of a background plugin per attached client, and
+/// every one of them hears the same hooks. Exactly one writes: the holder of
+/// the snapshot, until its heartbeat goes stale and another takes over.
+pub(crate) fn daemon_may_write(current: Option<(&str, u64)>, writer: &str, now_ms: u64) -> bool {
+    current.is_none_or(|(holder, heartbeat_ms)| {
+        holder == writer || !daemon_snapshot_is_fresh(heartbeat_ms, now_ms)
+    })
 }
 
 pub(crate) fn decode_agent_statuses(payload: &str) -> Vec<AgentStatus> {
     let Ok(value) = serde_json::from_str::<Value>(payload) else {
         return Vec::new();
     };
+    decode_status_entries(&value)
+}
+
+fn decode_status_entries(value: &Value) -> Vec<AgentStatus> {
     value
         .get("statuses")
         .and_then(Value::as_array)
@@ -227,10 +307,13 @@ pub(crate) fn decode_agent_statuses(payload: &str) -> Vec<AgentStatus> {
                             .and_then(Value::as_str)
                             .map(str::to_string),
                         since: entry.get("since").and_then(Value::as_u64).unwrap_or(0),
-                        sequence: 0,
+                        sequence: entry.get("sequence").and_then(Value::as_u64).unwrap_or(0),
                         expires_at: entry.get("expires_at").and_then(Value::as_u64),
                         updated_at: entry.get("updated_at").and_then(Value::as_u64).unwrap_or(0),
-                        detected: false,
+                        detected: entry
+                            .get("detected")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
                         clear_on_focus: entry
                             .get("clear_on_focus")
                             .and_then(Value::as_bool)

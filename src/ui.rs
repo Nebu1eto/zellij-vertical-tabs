@@ -350,8 +350,12 @@ pub(crate) fn mode_label(mode: InputMode) -> String {
     format!("{mode:?}").to_uppercase()
 }
 
-pub(crate) fn subscribe_to_events() {
-    subscribe(&[
+/// Zellij keeps a background plugin's subscriptions from its latest call alone,
+/// so every event is asked for at once. Only the daemon takes the session list,
+/// where it learns the session's name (its mode updates may not carry it), and
+/// the client list; any update would re-render a view.
+pub(crate) fn subscribe_to_events(view: View) {
+    let mut events = vec![
         EventType::ModeUpdate,
         EventType::TabUpdate,
         EventType::PaneUpdate,
@@ -361,7 +365,11 @@ pub(crate) fn subscribe_to_events() {
         EventType::PermissionRequestResult,
         EventType::Timer,
         EventType::Mouse,
-    ]);
+    ];
+    if view == View::Daemon {
+        events.extend([EventType::SessionUpdate, EventType::ListClients]);
+    }
+    subscribe(&events);
 }
 
 pub(crate) fn permissions_for_view(view: View) -> &'static [PermissionType] {
@@ -379,6 +387,16 @@ pub(crate) fn permissions_for_view(view: View) -> &'static [PermissionType] {
             PermissionType::ReadCliPipes,
         ],
         View::Tabs => &[
+            PermissionType::ReadApplicationState,
+            PermissionType::ChangeApplicationState,
+            PermissionType::RunCommands,
+            PermissionType::ReadCliPipes,
+        ],
+        // A background plugin has no pane to show a permission prompt in, so it
+        // relies on the grant cached for the location it shares with the bar.
+        // Zellij rewrites that entry with whatever was last granted, so asking
+        // for less would cost the bar its grant and prompt it again.
+        View::Daemon => &[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::RunCommands,

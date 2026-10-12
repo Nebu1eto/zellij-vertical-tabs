@@ -18,6 +18,9 @@ const SPACE_PIPE_LOG: &str = "/tmp/zellij-vtabs-pipe.log";
 const SPACE_CLAIM_WINDOW_MS: u64 = 150;
 const DEBUG_TRIGGER_PATH: &str = "/host/.zellij-vtabs-debug";
 const WIDTH_SYNC_MAX_ATTEMPTS: u8 = 64;
+/// How often, in timer ticks, the daemon checks that its client is still
+/// attached. The answer costs Zellij a layout dump, so not on every tick.
+const DAEMON_CLIENT_CHECK_TICKS: u8 = 5;
 const GIT_COMMAND: &str =
     "root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 1; printf '%s\n' \"$root\"; git status --porcelain=v1 --branch";
 
@@ -29,6 +32,20 @@ pub(crate) enum View {
     /// One-line tab strip for the active space, meant to sit at the top of the
     /// space's content so the status bar keeps its room for agents and music.
     Tabs,
+    /// No pane of its own: loaded once per session through `load_plugins`, it
+    /// tracks every agent and publishes the snapshot all other views show.
+    Daemon,
+}
+
+impl View {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            View::Horizontal => "horizontal",
+            View::Vertical => "vertical",
+            View::Tabs => "tabs",
+            View::Daemon => "daemon",
+        }
+    }
 }
 
 #[derive(Default)]
@@ -48,6 +65,19 @@ pub(crate) struct State {
     /// The shared status file's content as this instance last saw it, so a write
     /// happens only on a real change and a read only on a foreign one.
     pub(crate) agent_sync_payload: Option<String>,
+    /// A live daemon owns the agent statuses: this view only mirrors its
+    /// snapshot and neither applies nor shares agent changes of its own.
+    pub(crate) daemon_owned: bool,
+    /// The daemon snapshot as this view last read it.
+    pub(crate) daemon_payload: Option<String>,
+    /// Daemon only: identifies this instance among those of other clients.
+    pub(crate) daemon_writer: String,
+    /// Daemon only: the statuses last published and when, so a write happens on
+    /// a change or when the heartbeat is due.
+    pub(crate) daemon_published: Option<(String, u64)>,
+    /// Daemon only: its client has left the session. The instance lives on but
+    /// no longer receives tab or pane updates, so it must stop writing.
+    pub(crate) daemon_detached: bool,
     pub(crate) cwd_error: Option<String>,
     pub(crate) configured_home: Option<PathBuf>,
     pub(crate) git_context: Option<GitContext>,
@@ -146,8 +176,10 @@ impl ZellijPlugin for State {
         self.view = match configuration.get("view").map(String::as_str) {
             Some("vertical") => View::Vertical,
             Some("tabs") => View::Tabs,
+            Some("daemon") => View::Daemon,
             _ => View::Horizontal,
         };
+        self.daemon_writer = format!("{}:{}", ids.plugin_id, ids.client_id);
         self.configured_home = configuration
             .get("home")
             .filter(|home| !home.is_empty())
@@ -214,12 +246,16 @@ impl ZellijPlugin for State {
 
         // Subscribe before asking: an already-cached grant is answered immediately,
         // and the result event is lost when nothing is listening for it yet.
-        subscribe_to_events();
+        subscribe_to_events(self.view);
         set_timeout(1.0);
         request_permission(permissions_for_view(self.view));
     }
 
     fn update(&mut self, event: Event) -> bool {
+        if self.view == View::Daemon {
+            self.update_daemon(event);
+            return false;
+        }
         match event {
             Event::ModeUpdate(mode_info) => {
                 self.mode = mode_info.mode;
@@ -242,7 +278,9 @@ impl ZellijPlugin for State {
                 self.note_permissions_granted();
                 self.panes = panes;
                 self.track_focused_pane();
-                self.detect_agents_from_manifest();
+                if !self.daemon_owned {
+                    self.detect_agents_from_manifest();
+                }
                 self.observe_sidebar_width_change();
                 self.sync_sidebar_widths();
                 self.close_empty_own_tab_if_needed();
@@ -262,7 +300,9 @@ impl ZellijPlugin for State {
                     self.active_command = is_foreground.then(|| command_label(&command));
                 }
                 if let PaneId::Terminal(id) = pane_id {
-                    self.observe_foreground_command(id, &command, is_foreground);
+                    if !self.daemon_owned {
+                        self.observe_foreground_command(id, &command, is_foreground);
+                    }
                 }
             }
             Event::RunCommandResult(exit_code, stdout, _, context) => {
@@ -324,7 +364,7 @@ impl ZellijPlugin for State {
                 self.permissions_granted = true;
                 // Subscriptions and timers requested before the grant are dropped,
                 // so re-arm them here or the pane never receives another event.
-                subscribe_to_events();
+                subscribe_to_events(self.view);
                 set_timeout(1.0);
                 self.active_pane_id = None;
                 self.refresh_active_pane();
@@ -335,33 +375,9 @@ impl ZellijPlugin for State {
                 set_timeout(1.0);
                 self.hydrate_agent_statuses();
                 self.refresh_music();
-                if std::path::Path::new(DEBUG_TRIGGER_PATH).exists() {
-                    let view = match self.view {
-                        View::Horizontal => "horizontal",
-                        View::Vertical => "vertical",
-                        View::Tabs => "tabs",
-                    };
-                    let path = format!(
-                        "/host/.zellij-vtabs-debug-{view}-{}.json",
-                        self.plugin_id.unwrap_or(0)
-                    );
-                    let _ = std::fs::write(path, self.debug_snapshot());
-                }
-                let now = unix_seconds();
-                // An expired status does not mean the agent left, only that it
-                // went quiet: keep it listed as idle so the section stays complete.
-                for status in self.agent_statuses.values_mut() {
-                    if status
-                        .expires_at
-                        .is_some_and(|expires_at| expires_at <= now)
-                    {
-                        status.state = AgentState::Idle;
-                        status.detail = None;
-                        status.expires_at = None;
-                        status.clear_on_focus = false;
-                        status.since = now;
-                        status.updated_at = now;
-                    }
+                self.write_debug_snapshot_if_requested();
+                if !self.daemon_owned {
+                    self.expire_agent_statuses();
                 }
                 self.timer_ticks = self.timer_ticks.wrapping_add(1);
                 if self.timer_ticks >= self.git_refresh_interval {
@@ -432,6 +448,7 @@ impl ZellijPlugin for State {
                             switch_tab_to((hitbox.position + 1) as u32);
                         }
                     }
+                    View::Daemon => {}
                 }
                 return false;
             }
@@ -442,6 +459,17 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if self.view == View::Daemon {
+            // Space keybinds and agent focus requests belong to the views; the
+            // daemon only listens to the hooks.
+            if pipe_message.name == AGENT_PIPE {
+                if let Some(event) = pipe_message.payload.as_deref().and_then(parse_agent_event) {
+                    self.handle_agent_event(event);
+                    self.publish_daemon_snapshot();
+                }
+            }
+            return false;
+        }
         if let Some(command) = pipe_message.name.strip_prefix(SPACE_PIPE_PREFIX) {
             let command = command.to_string();
             let payload = pipe_message.payload.clone();
@@ -462,6 +490,10 @@ impl ZellijPlugin for State {
         let Some(payload) = pipe_message.payload else {
             return false;
         };
+        // The daemon heard the same hook; its snapshot may already include it.
+        if let Some(changed) = self.mirror_daemon_snapshot() {
+            return changed;
+        }
         let Some(event) = parse_agent_event(&payload) else {
             return false;
         };
@@ -479,6 +511,7 @@ impl ZellijPlugin for State {
             View::Horizontal => self.render_horizontal(&mut frame, rows, cols),
             View::Vertical => self.render_vertical(&mut frame, rows, cols),
             View::Tabs => self.render_space_tabs(&mut frame, rows, cols),
+            View::Daemon => return,
         }
         print!("{}", frame.finish());
     }
@@ -846,11 +879,7 @@ impl State {
         if !std::path::Path::new(DEBUG_TRIGGER_PATH).exists() {
             return;
         }
-        let view = match self.view {
-            View::Horizontal => "horizontal",
-            View::Vertical => "vertical",
-            View::Tabs => "tabs",
-        };
+        let view = self.view.label();
         let plugin_id = self.plugin_id.unwrap_or(0);
         let leader = self.has_command_authority();
         let line = format!(
@@ -1853,11 +1882,7 @@ impl State {
     }
 
     pub(crate) fn debug_snapshot(&self) -> String {
-        let view = match self.view {
-            View::Horizontal => "horizontal",
-            View::Vertical => "vertical",
-            View::Tabs => "tabs",
-        };
+        let view = self.view.label();
         let statuses = self
             .sorted_agent_statuses()
             .iter()
@@ -1924,6 +1949,8 @@ impl State {
             .collect::<Vec<_>>();
         serde_json::json!({
             "view": view,
+            "session_name": self.session_name,
+            "daemon_owned": self.daemon_owned,
             "cwd_error": self.cwd_error,
             "focused_terminal_pane": self.focused_terminal_pane,
             "plugin_id": self.plugin_id,
@@ -2074,7 +2101,8 @@ impl State {
                 .agent_statuses
                 .get(&pane_id)
                 .is_some_and(|status| status.clear_on_focus);
-            if clear {
+            // The daemon clears it for everyone; a mirror would only flicker.
+            if clear && !self.daemon_owned {
                 self.agent_statuses.remove(&pane_id);
             }
         }
@@ -2323,6 +2351,9 @@ impl State {
     }
 
     pub(crate) fn persist_agent_statuses(&mut self) {
+        if self.daemon_owned {
+            return;
+        }
         let Some(path) = self.sync_path() else {
             return;
         };
@@ -2341,6 +2372,9 @@ impl State {
     }
 
     pub(crate) fn hydrate_agent_statuses(&mut self) -> bool {
+        if let Some(changed) = self.mirror_daemon_snapshot() {
+            return changed;
+        }
         let Some(path) = self.sync_path() else {
             return false;
         };
@@ -2387,6 +2421,173 @@ impl State {
             changed = true;
         }
         changed
+    }
+
+    /// Every view sees only part of the session: Zellij sends tab and pane
+    /// updates to the focused tab's plugins alone, so a sidebar in another tab
+    /// works from a frozen pane list. The daemon is a background plugin, which
+    /// receives them whatever tab is focused, and decides for all of them.
+    pub(crate) fn update_daemon(&mut self, event: Event) {
+        match event {
+            Event::ModeUpdate(mode_info) => {
+                self.mode = mode_info.mode;
+                // A background plugin's mode updates come straight from the
+                // client and may not name the session.
+                if let Some(name) = mode_info.session_name.filter(|name| !name.is_empty()) {
+                    self.session_name = name;
+                }
+            }
+            Event::SessionUpdate(sessions, _) => {
+                if let Some(current) = sessions
+                    .into_iter()
+                    .find(|session| session.is_current_session)
+                {
+                    self.session_name = current.name;
+                }
+            }
+            Event::TabUpdate(mut tabs) => {
+                tabs.sort_by_key(|tab| tab.position);
+                self.tabs = tabs;
+                self.track_focused_pane();
+            }
+            Event::PaneUpdate(panes) => {
+                self.panes = panes;
+                self.track_focused_pane();
+                self.detect_agents_from_manifest();
+            }
+            Event::CommandChanged(PaneId::Terminal(id), command, is_foreground, _) => {
+                self.observe_foreground_command(id, &command, is_foreground);
+            }
+            Event::PermissionRequestResult(PermissionStatus::Granted) => {
+                self.permissions_granted = true;
+                subscribe_to_events(self.view);
+                set_timeout(1.0);
+            }
+            Event::Timer(_) => {
+                set_timeout(1.0);
+                self.write_debug_snapshot_if_requested();
+                self.expire_agent_statuses();
+                self.timer_ticks = self.timer_ticks.wrapping_add(1);
+                if self.timer_ticks.is_multiple_of(DAEMON_CLIENT_CHECK_TICKS) {
+                    list_clients();
+                }
+            }
+            Event::ListClients(clients) => {
+                self.daemon_detached = !clients.iter().any(|client| client.is_current_client);
+            }
+            _ => {}
+        }
+        self.publish_daemon_snapshot();
+    }
+
+    /// Writes the snapshot when the statuses changed or the heartbeat is due,
+    /// unless the daemon instance of another client holds it. A standby keeps
+    /// the holder's statuses: it only heard the hooks sent since it loaded, and
+    /// an agent that has been quiet since would vanish when it takes over.
+    pub(crate) fn publish_daemon_snapshot(&mut self) {
+        let Some(path) = daemon_snapshot_path(&self.session_name) else {
+            return;
+        };
+        let now = unix_millis();
+        let statuses = encode_daemon_statuses(&self.agent_statuses);
+        let due = self
+            .daemon_published
+            .as_ref()
+            .is_none_or(|(published, at)| {
+                *published != statuses || now.saturating_sub(*at) >= DAEMON_HEARTBEAT_MS
+            });
+        if !due {
+            return;
+        }
+        if self.daemon_detached {
+            self.daemon_published = None;
+            return;
+        }
+        let current = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|payload| decode_daemon_snapshot(&payload));
+        let holder = current
+            .as_ref()
+            .map(|snapshot| (snapshot.writer.as_str(), snapshot.heartbeat_ms));
+        if !daemon_may_write(holder, &self.daemon_writer, now) {
+            self.daemon_published = None;
+            if let Some(snapshot) = current {
+                self.adopt_statuses(snapshot.statuses);
+            }
+            return;
+        }
+        let payload = encode_daemon_snapshot(&self.agent_statuses, &self.daemon_writer, now);
+        let staging = format!("{}.{}.staging", path, self.daemon_writer.replace(':', "-"));
+        if std::fs::write(&staging, &payload).is_ok() && std::fs::rename(&staging, &path).is_ok() {
+            self.daemon_published = Some((statuses, now));
+        } else {
+            let _ = std::fs::remove_file(&staging);
+        }
+    }
+
+    /// Adopts the daemon's snapshot wholesale while it is live. Returns whether
+    /// the statuses changed, or none when no live daemon owns them, in which case
+    /// this view goes back to tracking and sharing statuses itself.
+    pub(crate) fn mirror_daemon_snapshot(&mut self) -> Option<bool> {
+        let payload = daemon_snapshot_path(&self.session_name)
+            .and_then(|path| std::fs::read_to_string(path).ok());
+        let snapshot = payload
+            .as_deref()
+            .and_then(decode_daemon_snapshot)
+            .filter(|snapshot| daemon_snapshot_is_fresh(snapshot.heartbeat_ms, unix_millis()));
+        let Some(snapshot) = snapshot else {
+            self.daemon_owned = false;
+            self.daemon_payload = None;
+            return None;
+        };
+        self.daemon_owned = true;
+        if self.daemon_payload == payload {
+            return Some(false);
+        }
+        self.daemon_payload = payload;
+        self.adopt_statuses(snapshot.statuses);
+        Some(true)
+    }
+
+    pub(crate) fn adopt_statuses(&mut self, statuses: Vec<AgentStatus>) {
+        if let Some(latest) = statuses.iter().map(|status| status.sequence).max() {
+            self.agent_sequence = self.agent_sequence.max(latest);
+        }
+        self.agent_statuses = statuses
+            .into_iter()
+            .map(|status| (status.pane_id, status))
+            .collect();
+    }
+
+    /// An expired status does not mean the agent left, only that it went quiet:
+    /// keep it listed as idle so the section stays complete.
+    pub(crate) fn expire_agent_statuses(&mut self) {
+        let now = unix_seconds();
+        for status in self.agent_statuses.values_mut() {
+            if status
+                .expires_at
+                .is_some_and(|expires_at| expires_at <= now)
+            {
+                status.state = AgentState::Idle;
+                status.detail = None;
+                status.expires_at = None;
+                status.clear_on_focus = false;
+                status.since = now;
+                status.updated_at = now;
+            }
+        }
+    }
+
+    pub(crate) fn write_debug_snapshot_if_requested(&self) {
+        if !std::path::Path::new(DEBUG_TRIGGER_PATH).exists() {
+            return;
+        }
+        let path = format!(
+            "/host/.zellij-vtabs-debug-{}-{}.json",
+            self.view.label(),
+            self.plugin_id.unwrap_or(0)
+        );
+        let _ = std::fs::write(path, self.debug_snapshot());
     }
 
     /// Terminal panes that can still host an agent: present and not exited.

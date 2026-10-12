@@ -2570,3 +2570,221 @@ fn the_default_space_is_shown_by_its_project_too() {
     assert!(output.contains("notes"), "got {output:?}");
     assert!(!output.contains("1 main"), "the bucket name stays hidden");
 }
+
+/// A session name of its own per test, so the shared files under `/tmp` of
+/// parallel tests never meet.
+fn daemon_test_session(test: &str) -> String {
+    format!("vtabs-test-{}-{test}", std::process::id())
+}
+
+fn remove_session_files(session: &str) {
+    for path in [daemon_snapshot_path(session), agent_sync_path(session)]
+        .into_iter()
+        .flatten()
+    {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn agent_pipe(payload: &str) -> PipeMessage {
+    PipeMessage {
+        source: PipeSource::Cli("test".to_string()),
+        name: "coding-agent-status".to_string(),
+        payload: Some(payload.to_string()),
+        args: BTreeMap::new(),
+        is_private: false,
+    }
+}
+
+fn daemon_state(session: &str, writer: &str) -> State {
+    let mut state = State {
+        view: View::Daemon,
+        session_name: session.to_string(),
+        daemon_writer: writer.to_string(),
+        ..State::default()
+    };
+    state.panes.panes.insert(
+        0,
+        vec![
+            PaneInfo {
+                id: 7,
+                ..PaneInfo::default()
+            },
+            PaneInfo {
+                id: 9,
+                ..PaneInfo::default()
+            },
+        ],
+    );
+    state
+}
+
+#[test]
+fn one_daemon_instance_holds_the_snapshot_until_its_heartbeat_goes_stale() {
+    let now = 100_000;
+    assert!(daemon_may_write(None, "1:1", now), "nobody holds it yet");
+    assert!(daemon_may_write(Some(("1:1", now - 1_000)), "1:1", now));
+    assert!(
+        !daemon_may_write(Some(("1:2", now - 1_000)), "1:1", now),
+        "the instance of another client keeps a live snapshot"
+    );
+    assert!(
+        daemon_may_write(Some(("1:2", now - DAEMON_STALE_MS)), "1:1", now),
+        "a holder that stopped beating is replaced"
+    );
+}
+
+#[test]
+fn the_daemon_publishes_what_it_hears_and_a_second_instance_stands_by() {
+    let session = daemon_test_session("publish");
+    remove_session_files(&session);
+    let mut daemon = daemon_state(&session, "4:1");
+    assert!(!daemon.pipe(agent_pipe(
+        r#"{"source_agent":"choco-pi","hook_event":"PreToolUse","tool_name":"exec","pane_id":7,"ts_ms":1}"#
+    )));
+    // A detected agent is published too: the views no longer detect.
+    daemon.update(Event::CommandChanged(
+        PaneId::Terminal(9),
+        vec!["claude".to_string()],
+        true,
+        Vec::new(),
+    ));
+
+    let path = daemon_snapshot_path(&session).unwrap();
+    let snapshot = decode_daemon_snapshot(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(snapshot.writer, "4:1");
+    let mut panes: Vec<(u32, AgentState, bool)> = snapshot
+        .statuses
+        .iter()
+        .map(|status| (status.pane_id, status.state, status.detected))
+        .collect();
+    panes.sort_by_key(|(pane_id, _, _)| *pane_id);
+    assert_eq!(
+        panes,
+        vec![(7, AgentState::Working, false), (9, AgentState::Idle, true)]
+    );
+    assert!(
+        std::fs::read_to_string(agent_sync_path(&session).unwrap()).is_err(),
+        "the daemon leaves the views' shared file alone"
+    );
+
+    // The daemon of a second client hears the same hook but does not write.
+    let mut standby = daemon_state(&session, "4:2");
+    standby.pipe(agent_pipe(
+        r#"{"source_agent":"choco-pi","hook_event":"Stop","pane_id":7,"ts_ms":2}"#,
+    ));
+    let snapshot = decode_daemon_snapshot(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(snapshot.writer, "4:1");
+    assert!(
+        standby.agent_statuses.contains_key(&9),
+        "a standby keeps the holder's agents, even one it never heard from"
+    );
+
+    // Once the holder stops beating, the standby takes over with all of them.
+    std::fs::write(
+        &path,
+        encode_daemon_snapshot(&daemon.agent_statuses, "4:1", 1),
+    )
+    .unwrap();
+    standby.update(Event::Timer(1.0));
+    let snapshot = decode_daemon_snapshot(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(snapshot.writer, "4:2");
+    let mut panes: Vec<u32> = snapshot
+        .statuses
+        .iter()
+        .map(|status| status.pane_id)
+        .collect();
+    panes.sort();
+    assert_eq!(panes, vec![7, 9]);
+    remove_session_files(&session);
+}
+
+#[test]
+fn a_view_mirrors_a_live_daemon_and_takes_over_when_it_goes_quiet() {
+    let session = daemon_test_session("mirror");
+    remove_session_files(&session);
+    let mut daemon = daemon_state(&session, "4:1");
+    daemon.pipe(agent_pipe(
+        r#"{"source_agent":"choco-pi","hook_event":"PreToolUse","tool_name":"exec","pane_id":7,"ts_ms":1}"#,
+    ));
+
+    // A sidebar whose own copy disagrees: it saw pane 7 exit and knows pane 9.
+    let mut view = State {
+        view: View::Vertical,
+        session_name: session.clone(),
+        ..State::default()
+    };
+    view.panes = daemon.panes.clone();
+    view.shell_idle_panes.insert(7, 1);
+    assert!(view.apply_agent_event(agent_event("claude-code", 9, None, None)));
+
+    assert!(view.hydrate_agent_statuses());
+    assert!(view.daemon_owned);
+    assert_eq!(
+        view.agent_statuses.keys().copied().collect::<Vec<_>>(),
+        vec![7],
+        "the daemon's list replaces the view's own, removals included"
+    );
+    assert_eq!(view.agent_statuses[&7].state, AgentState::Working);
+
+    // Its own observations no longer change or share anything.
+    view.update(Event::CommandChanged(
+        PaneId::Terminal(7),
+        vec!["/bin/zsh".to_string()],
+        false,
+        Vec::new(),
+    ));
+    assert!(!view.pipe(agent_pipe(
+        r#"{"source_agent":"codex","hook_event":"Stop","pane_id":9,"ts_ms":5}"#
+    )));
+    assert_eq!(
+        view.agent_statuses.keys().copied().collect::<Vec<_>>(),
+        vec![7]
+    );
+    assert!(
+        std::fs::read_to_string(agent_sync_path(&session).unwrap()).is_err(),
+        "a mirror never writes the shared file"
+    );
+
+    // A daemon that stopped beating no longer speaks for the session.
+    let path = daemon_snapshot_path(&session).unwrap();
+    std::fs::write(
+        &path,
+        encode_daemon_snapshot(&daemon.agent_statuses, "4:1", 1),
+    )
+    .unwrap();
+    assert!(!view.hydrate_agent_statuses());
+    assert!(!view.daemon_owned);
+    assert!(view.pipe(agent_pipe(
+        r#"{"source_agent":"codex","hook_event":"Stop","pane_id":9,"ts_ms":5}"#
+    )));
+    assert!(view.agent_statuses.contains_key(&9));
+    assert!(std::fs::read_to_string(agent_sync_path(&session).unwrap()).is_ok());
+    remove_session_files(&session);
+}
+
+#[test]
+fn a_daemon_whose_client_left_stops_writing() {
+    let session = daemon_test_session("detached");
+    remove_session_files(&session);
+    let mut daemon = daemon_state(&session, "4:1");
+    let client = |is_current_client| ClientInfo {
+        client_id: 2,
+        pane_id: PaneId::Terminal(7),
+        running_command: String::new(),
+        is_current_client,
+    };
+    daemon.update(Event::ListClients(vec![client(false)]));
+    daemon.pipe(agent_pipe(
+        r#"{"source_agent":"choco-pi","hook_event":"PreToolUse","tool_name":"exec","pane_id":7,"ts_ms":1}"#,
+    ));
+    let path = daemon_snapshot_path(&session).unwrap();
+    assert!(
+        std::fs::read_to_string(&path).is_err(),
+        "an instance cut off from pane updates must not speak for the session"
+    );
+
+    daemon.update(Event::ListClients(vec![client(true)]));
+    assert!(std::fs::read_to_string(&path).is_ok());
+    remove_session_files(&session);
+}
