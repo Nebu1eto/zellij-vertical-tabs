@@ -194,6 +194,8 @@ payload=$(jq -nc --arg pane "$ZELLIJ_PANE_ID" '{
 | `tool_name` | The tool in use, shown as the card's detail; for `Notification`, the notification text |
 | `summary` | The task, first line only |
 | `session_name` | choco-pi session name |
+| `session_id` | The agent's session; the session that first reports on a pane owns its card |
+| `root_session_id` | For a subagent, the top-level session it runs under; the card belongs to that session |
 | `ts_ms` | Send time in Unix milliseconds; older events than one already applied to the pane are ignored |
 
 | Hook event | Card state |
@@ -209,6 +211,8 @@ payload=$(jq -nc --arg pane "$ZELLIJ_PANE_ID" '{
 | `SessionEnd` | removed |
 
 A thinking, working, or compacting agent that sends nothing for 15 minutes goes back to idle and stays listed. An agent leaves the list on `SessionEnd`, when its pane closes, or when a shell takes the terminal back, however the agent ended; late hooks from it are then ignored until a newer `SessionStart`.
+
+choco-pi runs subagents inside the agent's process, so their hooks report the agent's pane. Events from a session other than the card's owner, or with a `root_session_id`, keep the card busy, but their `SessionStart` and `SessionEnd` neither open nor close it, and their task and name do not replace the owner's. A hook bridge that forwards neither field gets one card per pane, which any session on that pane can end.
 
 Each agent card starts with the pane's location. With spaces on it reads `space·tab·pane`, where the tab number is the tab's number inside its space; otherwise it reads `tab·pane`. A choco-pi card shows the session name from the payload's `session_name`, or from Pi's `π - <session> - <directory>` terminal title, before falling back to the task summary.
 
