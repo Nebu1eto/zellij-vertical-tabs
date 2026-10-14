@@ -2216,6 +2216,7 @@ fn closed_tabs_do_not_leave_remembered_state_behind() {
     // The tab closes and Zellij reuses its id for a tab of another space.
     state.tabs = vec![space_tab(0, 7, "docs/readme", true)];
     state.prune_closed_tab_state();
+    state.remember_active_space_tab();
     assert!(
         state.last_focused_tab_by_space.get("work").is_none(),
         "a space that no longer exists keeps no remembered tab"
@@ -3077,4 +3078,62 @@ fn a_subagent_heard_first_claims_the_card_for_its_top_level_session() {
         fresh.agent_statuses[&1].session_name.as_deref(),
         Some("parent name")
     );
+}
+
+fn focus_tabs(active_id: usize) -> Vec<TabInfo> {
+    [(0, 1, "a/1"), (1, 2, "a/2"), (2, 3, "b/1")]
+        .into_iter()
+        .map(|(position, tab_id, name)| TabInfo {
+            position,
+            tab_id,
+            name: name.to_string(),
+            active: tab_id == active_id,
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Removes the session-wide focus file a test used.
+struct FocusFile(u32);
+
+impl Drop for FocusFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(format!("/tmp/zellij-vtabs-focus-{}", self.0));
+    }
+}
+
+#[test]
+fn every_instance_returns_a_space_to_the_tab_it_was_last_left_on() {
+    let file = FocusFile(u32::MAX - std::process::id());
+    let _ = std::fs::remove_file(format!("/tmp/zellij-vtabs-focus-{}", file.0));
+    // One instance per tab; Zellij sends TabUpdate only to the focused tab's.
+    let instance = |home: usize| {
+        let mut state = State::default();
+        state.zellij_pid = Some(file.0);
+        state.tabs = focus_tabs(home);
+        state
+    };
+    let focus = |state: &mut State, tab_id: usize| {
+        state.tabs = focus_tabs(tab_id);
+        state.prune_closed_tab_state();
+        state.remember_active_space_tab();
+    };
+    let (mut a1, mut a2, mut b1) = (instance(1), instance(2), instance(3));
+
+    focus(&mut a1, 1);
+    focus(&mut a2, 2);
+    // Already remembering a/1 from its first visit, a/1 must still record it.
+    focus(&mut a1, 1);
+    assert_eq!(b1.space_switch_target(1), Some(1));
+    focus(&mut a2, 2);
+    assert_eq!(a2.space_switch_target(2), Some(3));
+    // b/1 writing its own space must keep what a was left on.
+    focus(&mut b1, 3);
+    assert_eq!(b1.space_switch_target(1), Some(2));
+    assert_eq!(b1.space_switch_target(2), Some(3));
+
+    // b/1 now remembers a/2, but a was left on a/1 since.
+    focus(&mut a1, 1);
+    assert_eq!(b1.space_switch_target(1), Some(1));
+    assert_eq!(b1.last_focused_tab_by_space.get("a"), Some(&1));
 }

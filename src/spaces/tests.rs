@@ -199,3 +199,25 @@ fn a_number_selects_that_tab_inside_the_space() {
     );
     assert_eq!(resolve_tab_switch(work, 0), None);
 }
+
+#[test]
+fn focus_memory_records_the_active_tab_and_forgets_what_is_gone() {
+    let mut memory: HashMap<String, usize> = [
+        ("work".to_string(), 10),
+        ("docs".to_string(), 12),
+        ("old".to_string(), 5),
+    ]
+    .into();
+    // docs/b was renamed into work, and the old space closed.
+    let tabs = vec![
+        tab(0, 10, "work/api", false),
+        tab(1, 11, "docs/a", true),
+        tab(2, 12, "work/b", false),
+    ];
+    let spaces = group_spaces(&tabs, "/", "main");
+    assert!(update_focus_memory(&mut memory, &spaces));
+    let expected: HashMap<String, usize> =
+        [("work".to_string(), 10), ("docs".to_string(), 11)].into();
+    assert_eq!(memory, expected);
+    assert!(!update_focus_memory(&mut memory, &spaces));
+}

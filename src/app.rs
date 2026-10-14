@@ -655,32 +655,24 @@ impl State {
     }
 
     /// Tabs and spaces disappear; their remembered state must not outlive them.
+    /// Focus memory is pruned with every update in remember_active_space_tab.
     pub(crate) fn prune_closed_tab_state(&mut self) {
         let live: HashSet<usize> = self.tabs.iter().map(|tab| tab.tab_id).collect();
         self.tabs_with_user_content
             .retain(|tab_id| live.contains(tab_id));
-        let known: HashSet<String> = self
-            .space_model()
-            .into_iter()
-            .map(|space| space.name)
-            .collect();
-        self.last_focused_tab_by_space
-            .retain(|name, tab_id| known.contains(name) && live.contains(tab_id));
     }
 
+    /// A tab update only reaches the plugins of the focused tab, so this
+    /// instance's tab list is current whenever this runs. Every instance keeps
+    /// its own copy of the memory, which goes stale while its tab is in the
+    /// background, so the update starts from the shared file and writes back
+    /// every space's entry, not only this one's.
     pub(crate) fn remember_active_space_tab(&mut self) {
-        let Some(tab) = self.tabs.iter().find(|tab| tab.active) else {
-            return;
-        };
-        let (space, _) = spaces::split_tab_name(&tab.name, self.separator(), self.default_space());
-        let tab_id = tab.tab_id;
-        // A tab update only reaches the plugins of the focused tab, so the
-        // active entry really is the focused one whenever this runs.
-        if self.last_focused_tab_by_space.get(&space) == Some(&tab_id) {
-            return;
+        self.load_focus_memory();
+        let model = self.space_model();
+        if spaces::update_focus_memory(&mut self.last_focused_tab_by_space, &model) {
+            self.persist_focus_memory();
         }
-        self.last_focused_tab_by_space.insert(space, tab_id);
-        self.persist_focus_memory();
     }
 
     /// Session-wide file holding the tab each space was last left on. The
@@ -691,17 +683,15 @@ impl State {
             .map(|pid| PathBuf::from(format!("/tmp/zellij-vtabs-focus-{pid}")))
     }
 
+    /// The shared file is the only authority: it replaces this instance's
+    /// copy rather than filling its gaps.
     pub(crate) fn load_focus_memory(&mut self) {
         let Some(path) = self.focus_memory_path() else {
             return;
         };
-        if let Ok(raw) = std::fs::read_to_string(&path) {
-            for (space, tab_id) in spaces::parse_focus_memory(&raw) {
-                self.last_focused_tab_by_space
-                    .entry(space)
-                    .or_insert(tab_id);
-            }
-        }
+        self.last_focused_tab_by_space = std::fs::read_to_string(&path)
+            .map(|raw| spaces::parse_focus_memory(&raw))
+            .unwrap_or_default();
     }
 
     pub(crate) fn persist_focus_memory(&self) {
@@ -724,13 +714,15 @@ impl State {
     }
 
     pub(crate) fn switch_to_space(&mut self, index: usize) {
-        self.load_focus_memory();
-        let model = self.space_model();
-        if let Some(tab_id) =
-            spaces::resolve_space_switch(&model, index, &self.last_focused_tab_by_space)
-        {
+        if let Some(tab_id) = self.space_switch_target(index) {
             self.focus_tab_id(tab_id);
         }
+    }
+
+    /// The tab switching to the index-th space (1-based) lands on.
+    pub(crate) fn space_switch_target(&mut self, index: usize) -> Option<usize> {
+        self.load_focus_memory();
+        spaces::resolve_space_switch(&self.space_model(), index, &self.last_focused_tab_by_space)
     }
 
     /// A keybind pipe reaches every instance in every tab, so only the instance

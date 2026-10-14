@@ -104,6 +104,11 @@ Everything is recomputed from `Event::TabUpdate`:
   a focus change elsewhere and each instance would remember a different tab. Runtime probe:
   leaving a space on its second tab and returning landed on the first tab until the file was
   added.
+  The file is the only authority. Each instance's copy goes stale while its tab is in the
+  background, so on every `TabUpdate` the focused instance reads the file, records its active
+  tab, prunes spaces and tabs that are gone, and writes the whole map back; a switch replaces
+  the copy with the file instead of merging into it. Writing only the instance's own copy, or
+  skipping the write because that copy already matched, lost other spaces' entries.
 
 **Identity rule: address tabs by `TabInfo.tab_id`, never by position.** Positions shift when
 any earlier tab closes, so a remembered position can silently target the wrong tab. Resolve

@@ -114,6 +114,24 @@ pub(crate) fn resolve_space_switch(
         .map(|tab| tab.tab_id)
 }
 
+/// Records the active tab as the one its space was last left on, and forgets
+/// spaces that are gone and tabs that closed or moved to another space.
+/// Returns whether anything changed.
+pub(crate) fn update_focus_memory(memory: &mut HashMap<String, usize>, spaces: &[Space]) -> bool {
+    let before = memory.clone();
+    memory.retain(|name, tab_id| {
+        spaces
+            .iter()
+            .any(|space| &space.name == name && space.tabs.iter().any(|tab| tab.tab_id == *tab_id))
+    });
+    for space in spaces {
+        if let Some(tab) = space.tabs.iter().find(|tab| tab.active) {
+            memory.insert(space.name.clone(), tab.tab_id);
+        }
+    }
+    *memory != before
+}
+
 /// The index-th tab of a space (1-based), which is the number the strip shows.
 pub(crate) fn resolve_tab_switch(space: &Space, index: usize) -> Option<usize> {
     space.tabs.get(index.checked_sub(1)?).map(|tab| tab.tab_id)
