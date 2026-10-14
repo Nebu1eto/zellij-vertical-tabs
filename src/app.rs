@@ -995,6 +995,11 @@ impl State {
     }
 
     pub(crate) fn handle_agent_event(&mut self, mut event: AgentEvent) -> bool {
+        // A subagent starting or ending is not the pane's agent doing so.
+        let nested = event.root_session_id.is_some();
+        if nested && matches!(event.event.as_str(), "SessionStart" | "SessionEnd") {
+            return false;
+        }
         // Async hooks of an agent that has already exited can still arrive. Only
         // a session started after the shell took the terminal back is adopted.
         if let Some(idle_since) = self.shell_idle_panes.get(&event.pane_id).copied() {
@@ -1024,8 +1029,9 @@ impl State {
 
         // A session nested in the card's own, such as a subagent, still shows
         // the pane is busy, but its start and end are not the card's, and its
-        // prompt and name do not replace the owner's.
-        if let Some(session_id) = event.session_id.clone() {
+        // prompt and name do not replace the owner's. A subagent that names its
+        // top-level session claims the card for that session, not for itself.
+        if let Some(session_id) = event.root_session_id.clone().or(event.session_id.clone()) {
             let carded = self
                 .agent_statuses
                 .get(&event.pane_id)
@@ -1043,6 +1049,10 @@ impl State {
                     self.session_owner_by_pane.insert(event.pane_id, session_id);
                 }
             }
+        }
+        if nested {
+            event.summary = None;
+            event.session_name = None;
         }
 
         if let Some(timestamp) = event.timestamp {

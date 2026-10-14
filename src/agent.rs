@@ -421,6 +421,8 @@ pub(crate) struct AgentEvent {
     pub(crate) summary: Option<String>,
     pub(crate) session_name: Option<String>,
     pub(crate) session_id: Option<String>,
+    /// The top-level session of a subagent session, which shares the pane.
+    pub(crate) root_session_id: Option<String>,
     pub(crate) pane_id: u32,
     pub(crate) timestamp: Option<u64>,
 }
@@ -452,6 +454,11 @@ pub(crate) fn parse_agent_event(payload: &str) -> Option<AgentEvent> {
             .filter(|name| !name.is_empty()),
         session_id: payload
             .get("session_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string),
+        root_session_id: payload
+            .get("root_session_id")
             .and_then(Value::as_str)
             .filter(|id| !id.is_empty())
             .map(str::to_string),

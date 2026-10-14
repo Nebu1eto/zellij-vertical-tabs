@@ -54,6 +54,7 @@ fn a_failed_turn_leaves_the_agent_idle_rather_than_failed() {
         pane_id: 7,
         timestamp: Some(9),
         session_id: None,
+        root_session_id: None,
     }));
     let status = state.agent_statuses.get(&7).unwrap();
     assert!(
@@ -72,6 +73,7 @@ fn a_failed_turn_leaves_the_agent_idle_rather_than_failed() {
         pane_id: 7,
         timestamp: Some(10),
         session_id: None,
+        root_session_id: None,
     }));
     assert!(state.agent_statuses.is_empty());
 }
@@ -106,6 +108,7 @@ fn events_map_onto_the_shared_state_vocabulary() {
             pane_id: 7,
             timestamp: Some(1),
             session_id: None,
+            root_session_id: None,
         }));
         let status = state.agent_statuses.get(&7).unwrap();
         assert_eq!(status.state, expected, "event {event}");
@@ -126,6 +129,7 @@ fn multiple_agent_sessions_are_tracked_per_pane() {
         pane_id: 7,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
     assert!(state.apply_agent_event(AgentEvent {
         source: "Claude Code".to_string(),
@@ -136,6 +140,7 @@ fn multiple_agent_sessions_are_tracked_per_pane() {
         pane_id: 12,
         timestamp: Some(2),
         session_id: None,
+        root_session_id: None,
     }));
     assert_eq!(state.agent_statuses.len(), 2);
 
@@ -159,6 +164,7 @@ fn multiple_agent_sessions_are_tracked_per_pane() {
         pane_id: 12,
         timestamp: Some(3),
         session_id: None,
+        root_session_id: None,
     }));
     assert_eq!(state.agent_statuses.len(), 1);
 }
@@ -181,6 +187,7 @@ fn agent_cards_carry_location_session_agent_and_state() {
         pane_id: 7,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
     assert!(state.apply_agent_event(AgentEvent {
         source: "Claude Code".to_string(),
@@ -191,6 +198,7 @@ fn agent_cards_carry_location_session_agent_and_state() {
         pane_id: 8,
         timestamp: Some(2),
         session_id: None,
+        root_session_id: None,
     }));
     assert!(state.apply_agent_event(AgentEvent {
         source: "Codex".to_string(),
@@ -201,6 +209,7 @@ fn agent_cards_carry_location_session_agent_and_state() {
         pane_id: 12,
         timestamp: Some(3),
         session_id: None,
+        root_session_id: None,
     }));
 
     let entries = state.agent_entries();
@@ -236,6 +245,7 @@ fn summary_survives_later_events_and_state_keeps_its_clock() {
         pane_id: 7,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
     let started = state.agent_statuses[&7].since;
     state.agent_statuses.get_mut(&7).unwrap().since = started - 90;
@@ -249,6 +259,7 @@ fn summary_survives_later_events_and_state_keeps_its_clock() {
         pane_id: 7,
         timestamp: Some(2),
         session_id: None,
+        root_session_id: None,
     }));
     let status = &state.agent_statuses[&7];
     assert_eq!(status.summary.as_deref(), Some("fix the sidebar"));
@@ -267,6 +278,7 @@ fn summary_survives_later_events_and_state_keeps_its_clock() {
         pane_id: 7,
         timestamp: Some(3),
         session_id: None,
+        root_session_id: None,
     }));
     assert!(
         state.agent_statuses[&7].since > started - 90,
@@ -398,6 +410,7 @@ fn the_section_names_are_bold_and_their_totals_are_not() {
         pane_id: 7,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
 
     let colors = Colors::default();
@@ -469,6 +482,7 @@ fn an_idle_state_stays_legible_on_a_focused_card() {
         pane_id: 7,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
     state.track_focused_pane();
 
@@ -515,6 +529,7 @@ fn a_focused_agent_card_is_highlighted_across_its_whole_width() {
         pane_id: 7,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
     state.track_focused_pane();
 
@@ -587,6 +602,7 @@ fn the_focused_panes_agent_card_is_marked_like_the_active_tab() {
             pane_id,
             timestamp: Some(1),
             session_id: None,
+            root_session_id: None,
         }));
     }
     state.track_focused_pane();
@@ -644,6 +660,7 @@ fn vertical_sidebar_renders_tab_and_agent_sections() {
         pane_id: 7,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
 
     let colors = Colors::default();
@@ -795,6 +812,7 @@ fn an_active_agent_stays_active_while_the_model_is_quiet() {
         pane_id: 7,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
 
     // A minute of silence is ordinary: the model is still producing the turn.
@@ -834,6 +852,7 @@ fn an_agent_card_keeps_its_session_name_while_tools_change() {
         pane_id: 7,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
     let entry = state.agent_entries().remove(0);
     assert_eq!(entry.name, "1·1 ship the sidebar");
@@ -850,6 +869,7 @@ fn an_agent_card_keeps_its_session_name_while_tools_change() {
         pane_id: 7,
         timestamp: Some(2),
         session_id: None,
+        root_session_id: None,
     }));
     let entry = state.agent_entries().remove(0);
     assert_eq!(entry.name, "1·1 ship the sidebar");
@@ -896,6 +916,7 @@ fn a_new_sidebar_adopts_the_statuses_its_siblings_already_have() {
         pane_id: 7,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
 
     // A sidebar loaded into a new tab starts empty and reads the shared file.
@@ -936,6 +957,7 @@ fn a_sidebar_keeps_its_own_newer_status_and_skips_departed_panes() {
         pane_id: 7,
         timestamp: Some(2),
         session_id: None,
+        root_session_id: None,
     }));
     let known = state.agent_statuses[&7].updated_at;
 
@@ -995,6 +1017,7 @@ fn a_finished_agent_waiting_for_input_is_done_not_blocked() {
         pane_id: 7,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
     let status = &state.agent_statuses[&7];
     assert_eq!(status.state, AgentState::Done);
@@ -1010,6 +1033,7 @@ fn a_finished_agent_waiting_for_input_is_done_not_blocked() {
         pane_id: 7,
         timestamp: Some(2),
         session_id: None,
+        root_session_id: None,
     }));
     let status = &state.agent_statuses[&7];
     assert_eq!(status.state, AgentState::Blocked);
@@ -1031,6 +1055,7 @@ fn compaction_events_show_a_compacting_state() {
         pane_id: 3,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
 
     let status = state.agent_statuses.get(&3).unwrap();
@@ -1054,6 +1079,7 @@ fn compaction_events_show_a_compacting_state() {
         pane_id: 3,
         timestamp: Some(2),
         session_id: None,
+        root_session_id: None,
     }));
     let status = state.agent_statuses.get(&3).unwrap();
     assert_eq!(status.state, AgentState::Thinking);
@@ -1084,6 +1110,7 @@ fn quiet_agents_stay_listed_as_idle_until_their_pane_closes() {
         pane_id: 7,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }));
 
     // Expire the working status the way the timer would.
@@ -1146,6 +1173,7 @@ fn a_terminated_agent_leaves_when_its_shell_takes_the_terminal_back() {
         event: event.to_string(),
         timestamp: Some(timestamp),
         session_id: None,
+        root_session_id: None,
         ..agent_event("choco-pi", 7, None, None)
     };
     let after_exit = unix_millis() + 60_000;
@@ -1276,6 +1304,7 @@ fn session_end_tombstone_rejects_delayed_events() {
         pane_id: 7,
         timestamp: Some(200),
         session_id: None,
+        root_session_id: None,
     }));
 
     assert!(state.handle_agent_event(AgentEvent {
@@ -1287,6 +1316,7 @@ fn session_end_tombstone_rejects_delayed_events() {
         pane_id: 7,
         timestamp: Some(300),
         session_id: None,
+        root_session_id: None,
     }));
     assert_eq!(state.last_hook_timestamp_by_pane.get(&7), Some(&300));
     assert!(state.agent_statuses.is_empty());
@@ -1300,6 +1330,7 @@ fn session_end_tombstone_rejects_delayed_events() {
         pane_id: 7,
         timestamp: Some(300),
         session_id: None,
+        root_session_id: None,
     }));
     assert_eq!(state.last_hook_timestamp_by_pane.get(&7), Some(&300));
     assert!(state.agent_statuses.is_empty());
@@ -1313,6 +1344,7 @@ fn session_end_tombstone_rejects_delayed_events() {
         pane_id: 7,
         timestamp: Some(300),
         session_id: None,
+        root_session_id: None,
     }));
     assert_eq!(state.last_hook_timestamp_by_pane.get(&7), Some(&300));
     assert_eq!(state.agent_statuses.get(&7).unwrap().pane_id, 7);
@@ -1326,6 +1358,7 @@ fn session_end_tombstone_rejects_delayed_events() {
         pane_id: 7,
         timestamp: Some(301),
         session_id: None,
+        root_session_id: None,
     }));
 }
 
@@ -2290,6 +2323,7 @@ fn agent_event(
         pane_id,
         timestamp: Some(1),
         session_id: None,
+        root_session_id: None,
     }
 }
 
@@ -2988,4 +3022,59 @@ fn a_subagent_sharing_the_pane_neither_ends_nor_renames_its_parent_card() {
     assert!(!state.handle_agent_event(hook("PreToolUse", "second", None, 10)));
     assert!(state.handle_agent_event(hook("SessionStart", "next", None, 11)));
     assert!(state.agent_statuses.contains_key(&1));
+}
+
+#[test]
+fn a_subagent_heard_first_claims_the_card_for_its_top_level_session() {
+    let mut state = State::default();
+    let hook = |event: &str, session: &str, root: Option<&str>, timestamp: u64| {
+        parse_agent_event(
+            &serde_json::json!({
+                "pane_id": 1,
+                "session_id": session,
+                "root_session_id": root,
+                "hook_event": event,
+                "summary": (event == "UserPromptSubmit").then(|| format!("{session} task")),
+                "session_name": format!("{session} name"),
+                "source_agent": "choco-pi",
+                "ts_ms": timestamp,
+            })
+            .to_string(),
+        )
+        .unwrap()
+    };
+    // Restored from the shared snapshot, so whose card it is was not saved.
+    let restored = hook("UserPromptSubmit", "parent", None, 1);
+    assert!(state.handle_agent_event(restored));
+    state.session_owner_by_pane.clear();
+
+    // The plugin starts while the parent waits and only its subagents speak.
+    assert!(state.handle_agent_event(hook("PreToolUse", "child", Some("parent"), 2)));
+    assert!(!state.handle_agent_event(hook("SessionStart", "nested", Some("parent"), 3)));
+    assert!(state.handle_agent_event(hook("UserPromptSubmit", "nested", Some("parent"), 4)));
+    assert!(!state.handle_agent_event(hook("SessionEnd", "child", Some("parent"), 5)));
+    let status = state.agent_statuses.get(&1).expect("the card stays");
+    assert_eq!(status.state, AgentState::Thinking);
+    assert_eq!(status.summary.as_deref(), Some("parent task"));
+    assert_eq!(status.session_name.as_deref(), Some("parent name"));
+
+    // The parent still owns it: its prompt and its end apply.
+    assert!(state.handle_agent_event(hook("UserPromptSubmit", "parent", None, 6)));
+    assert!(state.handle_agent_event(hook("SessionEnd", "parent", None, 7)));
+    assert!(state.agent_statuses.is_empty());
+    // A subagent starting afterwards does not reopen the pane.
+    assert!(!state.handle_agent_event(hook("SessionStart", "late", Some("parent"), 8)));
+    assert!(!state.handle_agent_event(hook("PreToolUse", "late", Some("parent"), 9)));
+
+    // With no card yet, a subagent's activity shows the pane busy, unnamed.
+    let mut fresh = State::default();
+    assert!(fresh.handle_agent_event(hook("PreToolUse", "child", Some("parent"), 1)));
+    let status = fresh.agent_statuses.get(&1).expect("a card");
+    assert_eq!(status.state, AgentState::Working);
+    assert_eq!(status.session_name, None);
+    assert!(fresh.handle_agent_event(hook("UserPromptSubmit", "parent", None, 2)));
+    assert_eq!(
+        fresh.agent_statuses[&1].session_name.as_deref(),
+        Some("parent name")
+    );
 }
