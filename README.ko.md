@@ -2,7 +2,7 @@
 
 [English](README.md) | 한국어
 
-가로 상태 표시줄, 세로 사이드바, 한 줄짜리 탭 바를 제공하는 Zellij WebAssembly 플러그인입니다. 탭(스페이스로 묶을 수 있음), 저장소, 브랜치, 연결된 워크트리 상태, 시계나 Apple Music에서 재생 중인 곡, choco-pi, Claude Code, Codex 및 터미널에서 감지한 코딩 에이전트의 상태를 표시합니다. 네 번째 뷰는 백그라운드에서 세션 전체의 에이전트 목록을 하나로 관리합니다.
+가로 상태 표시줄, 세로 사이드바, 한 줄짜리 탭 바를 제공하는 Zellij WebAssembly 플러그인입니다. 탭(스페이스로 묶을 수 있음), 저장소, 브랜치, 연결된 워크트리 상태, 시계나 Apple Music에서 재생 중인 곡, choco-pi, Claude Code, Codex, Grok Build 및 터미널에서 감지한 코딩 에이전트의 상태를 표시합니다. 네 번째 뷰는 백그라운드에서 세션 전체의 에이전트 목록을 하나로 관리합니다.
 
 ![탭과 코딩 에이전트를 표시하는 가로 상태 표시줄과 세로 사이드바](assets/demo.png)
 
@@ -171,7 +171,7 @@ pane split_direction="horizontal" {
 
 ## 코딩 에이전트 상태
 
-훅이 없어도 플러그인은 각 터미널 창의 포그라운드 명령으로 에이전트를 감지합니다. 대상은 `claude`, `codex`, `pi`, `opencode`, `gemini`, `cursor-agent`, `aider`, `amp`이며, 감지된 에이전트는 idle로 표시됩니다. 훅을 쓰면 다음 이름의 파이프로 JSON을 보내 수명 주기와 작업 내용을 더할 수 있습니다.
+훅이 없어도 플러그인은 각 터미널 창의 포그라운드 명령으로 에이전트를 감지합니다. 대상은 `claude`, `codex`, `grok`, `pi`, `opencode`, `gemini`, `cursor-agent`, `aider`, `amp`이며, 감지된 에이전트는 idle로 표시됩니다. 훅을 쓰면 다음 이름의 파이프로 JSON을 보내 수명 주기와 작업 내용을 더할 수 있습니다.
 
 ```sh
 zellij pipe --name coding-agent-status -- "$payload"
@@ -190,7 +190,7 @@ payload=$(jq -nc --arg pane "$ZELLIJ_PANE_ID" '{
 | --- | --- |
 | `hook_event` | 필수. 아래 표의 훅 이벤트 이름 |
 | `pane_id` | 에이전트가 있는 터미널 창. `ZELLIJ_PANE_ID`에서 가져옵니다 |
-| `source_agent` | `choco-pi`, `claude-code`, `codex` 또는 표시할 다른 이름 |
+| `source_agent` | `choco-pi`, `claude-code`, `codex`, `grok` 또는 표시할 다른 이름 |
 | `tool_name` | 사용 중인 도구로, 카드의 세부 정보에 표시됩니다. `Notification`이면 알림 문구입니다 |
 | `summary` | 작업 요약. 첫 줄만 씁니다 |
 | `session_name` | choco-pi 세션 이름 |
@@ -209,6 +209,8 @@ payload=$(jq -nc --arg pane "$ZELLIJ_PANE_ID" '{
 | `SessionEnd` | 목록에서 제거 |
 
 thinking, working, compacting 상태에서 15분 동안 아무 이벤트도 없으면 idle로 돌아가고 목록에는 남습니다. `SessionEnd`를 받거나, 창이 닫히거나, 에이전트가 어떻게 끝났든 셸이 터미널을 되찾으면 목록에서 빠집니다. 그 뒤에 늦게 도착한 훅은 더 새로운 `SessionStart`가 올 때까지 무시합니다.
+
+Grok Build는 `~/.claude/settings.json`의 Claude Code 훅도 실행합니다. Claude Code와 같은 브리지를 쓴다면 입력의 camelCase `hookEventName` 필드나 Grok이 모든 훅에 설정하는 `GROK_HOOK_EVENT` 변수로 Grok의 이벤트를 구분해 `source_agent: "grok"`을 보내야 합니다. 그렇지 않으면 카드에 Claude Code로 표시됩니다.
 
 에이전트 카드는 창의 위치로 시작합니다. 스페이스를 켜면 `스페이스·탭·창` 순서이고 탭 번호는 스페이스 안에서의 번호입니다. 스페이스를 끄면 `탭·창`입니다. choco-pi 카드는 페이로드의 `session_name`이나 Pi 터미널 제목 `π - <세션> - <디렉터리>`에서 얻은 세션 이름을 먼저 보여 주고, 없으면 작업 요약을 보여 줍니다.
 

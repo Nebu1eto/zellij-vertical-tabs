@@ -472,6 +472,7 @@ pub(crate) fn agent_label(source: &str) -> String {
         "choco-pi" => "choco-pi",
         "claude-code" => "Claude Code",
         "codex" => "Codex",
+        "grok" => "Grok Build",
         other => other,
     }
     .to_string()
@@ -525,6 +526,7 @@ pub(crate) fn detected_agent_label(command: &str) -> Option<&'static str> {
     match command {
         "claude" | "claude-code" => Some("Claude Code"),
         "codex" => Some("Codex"),
+        "grok" => Some("Grok Build"),
         "pi" | "choco-pi" => Some("choco-pi"),
         "opencode" => Some("OpenCode"),
         "gemini" => Some("Gemini"),

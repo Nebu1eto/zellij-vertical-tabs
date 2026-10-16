@@ -43,6 +43,15 @@ fn parses_codex_agent_event() {
 }
 
 #[test]
+fn parses_grok_build_agent_event() {
+    let event = parse_agent_event(
+        r#"{"source_agent":"grok","hook_event":"SessionStart","pane_id":7,"ts_ms":9}"#,
+    )
+    .unwrap();
+    assert_eq!(event.source, "Grok Build");
+}
+
+#[test]
 fn a_failed_turn_leaves_the_agent_idle_rather_than_failed() {
     let mut state = State::default();
     assert!(state.apply_agent_event(AgentEvent {
@@ -1281,6 +1290,27 @@ fn a_running_command_pane_agent_is_not_cleared_as_background() {
         )]),
     }));
     assert!(state.agent_statuses.is_empty());
+}
+
+#[test]
+fn detects_grok_build_from_its_foreground_command() {
+    let mut state = State::default();
+    state.panes.panes.insert(
+        0,
+        vec![PaneInfo {
+            id: 7,
+            ..PaneInfo::default()
+        }],
+    );
+    state.update(Event::CommandChanged(
+        PaneId::Terminal(7),
+        vec!["grok".to_string()],
+        true,
+        Vec::new(),
+    ));
+    let status = &state.agent_statuses[&7];
+    assert!(status.detected);
+    assert_eq!(status.source, "Grok Build");
 }
 
 #[test]

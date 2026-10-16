@@ -2,7 +2,7 @@
 
 English | [한국어](README.ko.md)
 
-A Zellij WebAssembly plugin for a horizontal status bar, a vertical sidebar, and a one-line tab strip. It shows tabs grouped into optional spaces, repository, branch, and linked-worktree state, a clock or the track Apple Music is playing, and coding-agent status for choco-pi, Claude Code, Codex, and detected terminal agents. A fourth, background view keeps one agent list for the whole session.
+A Zellij WebAssembly plugin for a horizontal status bar, a vertical sidebar, and a one-line tab strip. It shows tabs grouped into optional spaces, repository, branch, and linked-worktree state, a clock or the track Apple Music is playing, and coding-agent status for choco-pi, Claude Code, Codex, Grok Build, and detected terminal agents. A fourth, background view keeps one agent list for the whole session.
 
 ![Horizontal status bar and vertical sidebar showing tabs and coding agents](assets/demo.png)
 
@@ -171,7 +171,7 @@ A tab you have not named shows the repository it sits in, or its directory, and 
 
 ## Coding-agent status
 
-Without hooks, the plugin detects agents from the foreground command of each terminal pane: `claude`, `codex`, `pi`, `opencode`, `gemini`, `cursor-agent`, `aider`, and `amp`. A detected agent is listed as idle. Hooks add its lifecycle and task by sending JSON through the named pipe:
+Without hooks, the plugin detects agents from the foreground command of each terminal pane: `claude`, `codex`, `grok`, `pi`, `opencode`, `gemini`, `cursor-agent`, `aider`, and `amp`. A detected agent is listed as idle. Hooks add its lifecycle and task by sending JSON through the named pipe:
 
 ```sh
 zellij pipe --name coding-agent-status -- "$payload"
@@ -190,7 +190,7 @@ payload=$(jq -nc --arg pane "$ZELLIJ_PANE_ID" '{
 | --- | --- |
 | `hook_event` | Required. The hook event name, as below |
 | `pane_id` | The agent's terminal pane, from `ZELLIJ_PANE_ID` |
-| `source_agent` | `choco-pi`, `claude-code`, `codex`, or any other name to show |
+| `source_agent` | `choco-pi`, `claude-code`, `codex`, `grok`, or any other name to show |
 | `tool_name` | The tool in use, shown as the card's detail; for `Notification`, the notification text |
 | `summary` | The task, first line only |
 | `session_name` | choco-pi session name |
@@ -213,6 +213,8 @@ payload=$(jq -nc --arg pane "$ZELLIJ_PANE_ID" '{
 A thinking, working, or compacting agent that sends nothing for 15 minutes goes back to idle and stays listed. An agent leaves the list on `SessionEnd`, when its pane closes, or when a shell takes the terminal back, however the agent ended; late hooks from it are then ignored until a newer `SessionStart`.
 
 choco-pi runs subagents inside the agent's process, so their hooks report the agent's pane. Events from a session other than the card's owner, or with a `root_session_id`, keep the card busy, but their `SessionStart` and `SessionEnd` neither open nor close it, and their task and name do not replace the owner's. A hook bridge that forwards neither field gets one card per pane, which any session on that pane can end.
+
+Grok Build also runs the Claude Code hooks in `~/.claude/settings.json`. A bridge shared with Claude Code tells Grok's events apart by their camelCase `hookEventName` field, or by the `GROK_HOOK_EVENT` variable Grok sets for every hook, and sends `source_agent: "grok"`; otherwise the card reads Claude Code.
 
 Each agent card starts with the pane's location. With spaces on it reads `space·tab·pane`, where the tab number is the tab's number inside its space; otherwise it reads `tab·pane`. A choco-pi card shows the session name from the payload's `session_name`, or from Pi's `π - <session> - <directory>` terminal title, before falling back to the task summary.
 
